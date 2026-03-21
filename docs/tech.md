@@ -367,3 +367,1273 @@ await request(...).get(...).expect(...);
 - `supertest` 与 Nest e2e 测试回到标准用法
 
 最终结果就是：代码行为不变，但类型系统恢复正常，编辑器报错消失，测试文件的静态安全性也更高。
+
+---
+
+# `agent-server` 后端中涉及的 Nest 语法、引入的包与工具总解释
+
+下面这部分不是只解释某一行代码，而是把当前 `agent-server` 这个后端里**实际出现的 Nest 语法、常见 TypeScript 写法、Node/Web 运行时能力、第三方包、以及开发工具链**统一说明清楚。
+
+## 一、先理解这个后端的大体结构
+
+当前后端是一个标准的 **NestJS + TypeScript** 服务。
+
+它的大致分层是：
+
+1. `src/main.ts`
+   负责启动应用。
+2. `src/app.module.ts`
+   负责把全局模块组织起来。
+3. `src/modules/agent/agent.module.ts`
+   负责注册 Agent 相关的控制器和服务。
+4. `agent.controller.ts`
+   负责 HTTP / SSE 接口入口。
+5. `agent.service.ts`
+   负责核心业务编排。
+6. `agent-run-store.service.ts`
+   负责运行状态、事件历史和 SSE 推送。
+7. `resource-collection.service.ts`
+   负责本地文件和网页资源采集。
+8. `ollama.provider.ts`
+   负责调用本地 Ollama 模型服务。
+9. `agent-report.service.ts`
+   负责落盘输出报告文件。
+
+本质上，这就是一个典型的：
+
+- **Controller** 接请求
+- **Service** 做业务
+- **Store / Provider / Utility Service** 提供能力
+- **Module** 负责注册和装配
+
+的 Nest 项目。
+
+## 二、Nest 核心语法到底是什么
+
+### 1. `NestFactory.create(AppModule)`
+
+#### 这是什么
+
+它来自 `@nestjs/core`，写在 `src/main.ts` 中：
+
+```ts
+const app = await NestFactory.create(AppModule);
+```
+
+#### 本质是在做什么
+
+它的本质是：
+
+**根据根模块 `AppModule` 创建一个 Nest 应用实例，并把整个模块图、依赖注入容器、路由系统、中间能力都初始化起来。**
+
+#### 它发挥作用的原理
+
+当你把 `AppModule` 交给 `NestFactory.create()` 之后，Nest 会：
+
+1. 读取 `AppModule` 上的元数据。
+2. 找到它 `imports` 的模块。
+3. 收集所有 `controllers` 和 `providers`。
+4. 建立依赖注入容器。
+5. 生成路由映射。
+6. 创建底层 HTTP 服务器适配层。
+
+也就是说，这一步不是“new 一个类”那么简单，而是在构建整个应用运行时。
+
+#### 更底层的原理
+
+Nest 本质上是一个**建立在 TypeScript 装饰器元数据之上的 IoC/DI 框架**。
+
+- **IoC**：控制反转，意思是对象不是你自己到处 `new`，而是交给框架统一管理。
+- **DI**：依赖注入，意思是类依赖什么，由框架自动帮你注入。
+
+`NestFactory.create(AppModule)` 会触发 Nest 的扫描器去分析装饰器元数据，例如：
+
+- 哪些类是 `@Module`
+- 哪些类是 `@Controller`
+- 哪些类是 `@Injectable`
+- 哪些 provider 需要注入到哪些类里
+
+然后再把这些关系组装成可运行的应用。
+
+#### 注意点
+
+1. `create(AppModule)` 的入参通常是根模块，不是随便一个业务类。
+2. 应用启动失败时，很多错误其实都发生在“模块扫描”和“依赖注入解析”阶段，而不是 `listen()` 阶段。
+3. `NestFactory` 来自 `@nestjs/core`，而具体 HTTP 平台实现通常由 `@nestjs/platform-express` 提供。
+
+### 2. `@Module()`
+
+#### 这是什么
+
+它来自 `@nestjs/common`，例如：
+
+```ts
+@Module({
+  imports: [AgentModule],
+  controllers: [AppController],
+  providers: [AppService],
+})
+export class AppModule {}
+```
+
+以及：
+
+```ts
+@Module({
+  controllers: [AgentController],
+  providers: [
+    AgentService,
+    AgentRunStoreService,
+    OllamaProvider,
+    ResourceCollectionService,
+    AgentReportService,
+  ],
+})
+export class AgentModule {}
+```
+
+#### 本质是在做什么
+
+`@Module()` 的本质是：
+
+**告诉 Nest：这一组控制器、服务、依赖，属于同一个功能边界。**
+
+可以把它理解为“后端功能包”或者“依赖注册清单”。
+
+#### 它发挥作用的原理
+
+Nest 不会自动扫描整个项目里所有类，而是**从根模块开始**，沿着 `imports` 向下递归收集模块，再从每个模块里读取：
+
+- `controllers`
+- `providers`
+- `imports`
+- `exports`
+
+从而建立完整的依赖关系图。
+
+#### 更底层的原理
+
+`@Module()` 本身也是一个装饰器。它会把配置对象挂到类的元数据上。Nest 在启动时通过反射读取这份元数据，再据此构建容器。
+
+#### 注意点
+
+1. 一个类要想被 Nest 作为 provider 管理，通常必须出现在某个模块的 `providers` 里。
+2. 一个模块要想使用别的模块导出的 provider，往往需要通过 `imports` + `exports` 明确声明。
+3. 当前项目里的 `AgentModule` 相当于一个功能边界清晰的业务模块。
+
+### 2.1 `providers` 到底是什么
+
+#### 这是什么
+
+`providers` 是 `@Module({...})` 配置对象中的一个字段，例如当前项目里：
+
+```ts
+@Module({
+  controllers: [AgentController],
+  providers: [
+    AgentService,
+    AgentRunStoreService,
+    OllamaProvider,
+    ResourceCollectionService,
+    AgentReportService,
+  ],
+})
+```
+
+#### 本质是在做什么
+
+它的本质是：
+
+**向 Nest 的依赖注入容器登记“这个模块里有哪些可被注入、可被复用的对象提供者”。**
+
+这里“provider”不要只机械地理解成“服务类”，更准确地说，它是：
+
+**一个能够向别的类提供依赖实例的注册项。**
+
+在当前项目里，大多数 provider 恰好就是 class，例如：
+
+- `AgentService`
+- `AgentRunStoreService`
+- `OllamaProvider`
+- `ResourceCollectionService`
+- `AgentReportService`
+
+所以你会很容易把 `providers` 看成“服务列表”。这个理解在当前项目里基本成立，但概念上它比“服务列表”更广。
+
+#### 它发挥作用的原理
+
+当 Nest 启动模块时，会读取 `providers`，然后把这些 provider 注册进 IoC 容器。
+
+后面如果某个类构造函数写了：
+
+```ts
+constructor(
+  private readonly runStore: AgentRunStoreService,
+  private readonly ollamaProvider: OllamaProvider,
+) {}
+```
+
+Nest 就会去容器里找：
+
+1. 有没有 `AgentRunStoreService`
+2. 有没有 `OllamaProvider`
+
+如果有，就把对应实例注入进去。
+
+所以你可以把 `providers` 理解为：
+
+**“这个模块向容器声明：这些东西由我提供，你们可以来注入使用。”**
+
+#### 更底层的原理
+
+更底层一点看，provider 其实是围绕 **token → value / factory / class instance** 这件事建立的。
+
+最常见的简写写法是：
+
+```ts
+providers: [AgentService]
+```
+
+这实际上相当于一种更完整的注册形式：
+
+```ts
+providers: [
+  {
+    provide: AgentService,
+    useClass: AgentService,
+  },
+]
+```
+
+也就是说：
+
+- `provide` 是注入 token
+- `useClass` 表示遇到这个 token 时，用哪个类来创建实例
+
+Nest 除了支持 `useClass`，还支持：
+
+- `useValue`
+- `useFactory`
+- `useExisting`
+
+所以 provider 本质不是“某个特殊关键字魔法”，而是 Nest 的**依赖注册机制**。
+
+#### 为什么这个概念很重要
+
+很多初学者会把这些概念混在一起：
+
+1. `provider`
+2. `service`
+3. `injectable`
+4. `module`
+
+它们其实不是一回事：
+
+- `service`：只是社区习惯叫法，通常指承担业务逻辑的类。
+- `@Injectable()`：说明这个类可以作为可注入对象。
+- `providers`：把这些可注入对象正式注册到模块容器里。
+- `module`：负责组织这些注册关系。
+
+换句话说：
+
+**`@Injectable()` 让类“有资格被注入”，`providers` 让类“真的被注册进容器”。**
+
+#### 注意点
+
+1. 不是写了 `@Injectable()` 就一定能注入成功，还必须出现在某个模块的 `providers` 中，或者被别的模块 `export` 后再 `import` 进来。
+2. 当前项目里的这些 provider 默认大多是单例，因此像 `AgentRunStoreService` 这样的内存状态会被整个应用共享。
+3. 如果未来你把某个能力拆成独立模块，却忘了 `export`，另一个模块即便 `import` 了也可能拿不到对应 provider。
+
+### 3. `@Controller()`、`@Get()`、`@Post()`、`@Sse()`
+
+#### 这是什么
+
+这些都是 `@nestjs/common` 提供的路由装饰器。
+
+例如：
+
+```ts
+@Controller('agent')
+export class AgentController {
+  @Post('runs')
+  createRun(...) {}
+
+  @Get('runs/:runId')
+  getRun(...) {}
+
+  @Sse('runs/:runId/stream')
+  streamRun(...) {}
+}
+```
+
+#### 本质是在做什么
+
+它们的本质是：
+
+**把某个类方法映射成 HTTP 路由处理器。**
+
+其中：
+
+- `@Controller('agent')` 指定控制器的公共路由前缀。
+- `@Post('runs')` 表示处理 `POST /agent/runs`
+- `@Get('runs/:runId')` 表示处理 `GET /agent/runs/:runId`
+- `@Sse('runs/:runId/stream')` 表示处理 SSE 长连接接口
+
+再叠加 `main.ts` 里的：
+
+```ts
+app.setGlobalPrefix('api');
+```
+
+最终真实路由会变成：
+
+- `POST /api/agent/runs`
+- `GET /api/agent/runs/:runId`
+- `GET /api/agent/runs/:runId/stream`
+
+#### 它发挥作用的原理
+
+Nest 在启动时会扫描控制器方法上的这些装饰器，把它们注册到底层 HTTP 适配器中。
+
+也就是说，**方法名本身不重要，装饰器元数据才重要**。
+
+底层会记录：
+
+1. HTTP 方法是什么。
+2. 路径是什么。
+3. 这个请求到来时应该调用哪个类实例的哪个方法。
+4. 参数该如何提取。
+
+#### 更底层的原理
+
+如果从底层看，Nest 最终还是在底层 HTTP 框架上挂 handler。
+
+只是 Nest 帮你把下面这些事情做了抽象：
+
+- URL 匹配
+- 参数解析
+- 异常转响应
+- 依赖注入
+- 生命周期管理
+
+你写的是声明式装饰器，Nest 在启动期把它转换为运行时路由表。
+
+#### 注意点
+
+1. 路由路径是可以层层叠加的：全局前缀 + 控制器前缀 + 方法前缀。
+2. `@Sse()` 不是普通 JSON 接口，它走的是 `text/event-stream`。
+3. 同一路径不要同时声明冲突的处理器，否则容易出现覆盖或难以排查的问题。
+
+### 4. `@Body()` 与 `@Param()`
+
+#### 这是什么
+
+这两个也是参数装饰器：
+
+```ts
+createRun(@Body() body: Record<string, unknown>) {}
+getRun(@Param('runId') runId: string) {}
+```
+
+#### 本质是在做什么
+
+它们的本质是：
+
+**告诉 Nest 从 HTTP 请求的哪个位置提取参数，并传给方法。**
+
+- `@Body()`：从请求体里取数据。
+- `@Param('runId')`：从路径参数里取 `runId`。
+
+#### 它发挥作用的原理
+
+当请求进入控制器时，Nest 会根据参数装饰器的元数据，自动去：
+
+- `req.body`
+- `req.params`
+- `req.query`
+- `req.headers`
+
+等位置取值，再按顺序喂给方法参数。
+
+#### 更底层的原理
+
+本质上，这是一层**从底层请求对象到声明式参数列表的映射**。
+
+不使用 Nest 时，你往往要自己写：
+
+```ts
+const body = req.body;
+const runId = req.params.runId;
+```
+
+Nest 用参数装饰器把这一步抽象掉了。
+
+#### 注意点
+
+1. 现在这里只做了手动归一化和校验，没有引入 DTO + class-validator。
+2. `Record<string, unknown>` 的含义是“这是个对象，但字段类型还不可信”，所以后面要自己做 `typeof`、`Array.isArray` 等检查。
+
+### 5. `@Injectable()`
+
+#### 这是什么
+
+它也是 `@nestjs/common` 的装饰器，当前项目里 `AgentService`、`AgentRunStoreService`、`AgentReportService`、`OllamaProvider`、`ResourceCollectionService` 都用了它。
+
+#### 本质是在做什么
+
+它的本质是：
+
+**把一个类声明为可被 Nest 注入容器管理的 provider。**
+
+换句话说，Nest 才知道这个类可以被别的类依赖。
+
+#### 它发挥作用的原理
+
+当 Nest 发现一个 `@Injectable()` 类又被注册进 `providers` 后，就会为它创建实例，并在别的类构造函数需要它时进行注入。
+
+例如：
+
+```ts
+constructor(
+  private readonly runStore: AgentRunStoreService,
+  private readonly ollamaProvider: OllamaProvider,
+) {}
+```
+
+意思不是“语言自动懂了”，而是：
+
+1. TypeScript 通过类型知道参数类型。
+2. Nest 通过反射拿到这个构造函数参数类型。
+3. 再去容器中找匹配的 provider 实例。
+4. 注入进去。
+
+#### 更底层的原理
+
+这一切依赖于：
+
+- 装饰器元数据
+- `reflect-metadata`
+- TypeScript 编译时生成的设计时类型信息
+
+Nest 启动时会读取构造函数参数的元数据，例如“这个参数类型是 `AgentRunStoreService`”，然后按 token 去容器里解析实例。
+
+#### 注意点
+
+1. `@Injectable()` 不等于“一定能注入成功”，还得在模块里注册。
+2. 当前默认 provider 生命周期通常是单例。
+3. 单例服务里保存状态要小心线程模型和并发语义。这个项目里 `AgentRunStoreService` 用内存 `Map` 保存运行状态，就是一种单例内存状态。
+
+### 6. `constructor(private readonly xxx: SomeService)`
+
+#### 这是什么
+
+这是 TypeScript 的**参数属性（parameter properties）**语法，不是 Nest 独有，但在 Nest 里非常常见。
+
+例如：
+
+```ts
+constructor(private readonly agentService: AgentService) {}
+```
+
+#### 本质是在做什么
+
+它同时做了两件事：
+
+1. 声明一个类字段 `this.agentService`
+2. 让构造函数参数接受注入值
+
+#### 它发挥作用的原理
+
+普通写法通常是：
+
+```ts
+private readonly agentService: AgentService;
+
+constructor(agentService: AgentService) {
+  this.agentService = agentService;
+}
+```
+
+参数属性语法只是更简洁。
+
+Nest 真正依赖的是“构造函数参数类型”，不是这个语法糖本身。
+
+#### 注意点
+
+1. `private readonly` 只是 TypeScript 层面的访问控制和只读约束。
+2. 运行时的对象仍然是普通 JavaScript 对象，不存在真正的私有字段保护。
+
+### 7. `BadRequestException`、`NotFoundException`、`ServiceUnavailableException`
+
+#### 这是什么
+
+这些来自 `@nestjs/common`，是 Nest 封装好的 HTTP 异常类。
+
+#### 本质是在做什么
+
+它们的本质是：
+
+**用“抛异常”的写法来表达 HTTP 错误响应。**
+
+例如：
+
+- `BadRequestException` 对应 400
+- `NotFoundException` 对应 404
+- `ServiceUnavailableException` 对应 503
+
+#### 它发挥作用的原理
+
+你在业务代码里直接 `throw new BadRequestException('任务不能为空')`，Nest 的异常过滤体系会拦住它，并自动生成 HTTP 响应。
+
+这就避免你在每个控制器里手写：
+
+```ts
+res.status(400).json(...)
+```
+
+#### 更底层的原理
+
+Nest 内部有统一的异常处理层，会判断抛出的对象是否是 `HttpException` 家族；如果是，就按其中携带的状态码和响应体格式输出给客户端。
+
+#### 注意点
+
+1. 业务异常和系统异常最好区分开。
+2. 如果抛的是普通 `Error`，通常会变成 500，除非你自定义异常过滤器。
+3. 当前项目里 `OllamaProvider` 用 503 表示“依赖服务不可用”，语义是合理的。
+
+### 8. `type MessageEvent`、`Observable<MessageEvent>`、`@Sse()`
+
+#### 这是什么
+
+在当前项目中，SSE 接口这样写：
+
+```ts
+@Sse('runs/:runId/stream')
+streamRun(@Param('runId') runId: string): Observable<MessageEvent> {
+  return this.agentService.streamRun(runId);
+}
+```
+
+#### 本质是在做什么
+
+它的本质是：
+
+**返回一个可以持续发出多条消息的数据流，而不是一次性返回一个 JSON 对象。**
+
+#### 它发挥作用的原理
+
+Nest 对 `@Sse()` 的约定是：
+
+- 如果你返回的是 `Observable<MessageEvent>`
+- 那么 Observable 每 `next()` 一次
+- Nest 就往 HTTP 响应流里写一帧 SSE 事件
+
+`MessageEvent` 里的：
+
+- `type` 对应 SSE 协议里的 `event:`
+- `data` 对应 SSE 协议里的 `data:`
+
+前端 `EventSource.addEventListener(type, ...)` 就能按事件名接住。
+
+#### 更底层的原理
+
+SSE 不是轮询，也不是 WebSocket。
+
+它本质上是：
+
+1. 浏览器发一个普通 HTTP GET。
+2. 服务端不立刻结束响应。
+3. 响应头声明为 `text/event-stream`。
+4. 之后不断往同一条响应流里追加文本帧。
+5. 浏览器边收边解析，再触发前端回调。
+
+所以它是“基于 HTTP 的服务端单向推送”。
+
+#### 注意点
+
+1. SSE 很适合进度流、日志流、通知流这种“服务端持续推送”的场景。
+2. 如果需要双向实时通信，通常更适合 WebSocket。
+3. SSE 断线重连、代理超时、CORS、反向代理缓冲等问题，在生产环境要单独关注。
+
+## 三、RxJS 在这里到底起了什么作用
+
+### 1. `Observable`
+
+#### 这是什么
+
+`Observable` 来自 `rxjs`，可以理解为“未来会持续产生值的流”。
+
+#### 本质是在做什么
+
+它的本质是：
+
+**把“一个一个到来的异步事件”包装成统一的数据流抽象。**
+
+在这个项目里，它正好适合表示：
+
+- 某个 run 的 SSE 事件流
+
+#### 它发挥作用的原理
+
+`new Observable((subscriber) => { ... })` 中：
+
+- `subscriber.next(value)`：发一条值
+- `subscriber.error(err)`：发错误并结束
+- `subscriber.complete()`：正常结束
+
+Nest 的 `@Sse()` 会订阅它，并把每次 `next` 转成 SSE 输出。
+
+### 2. `Subject`
+
+#### 这是什么
+
+`Subject` 也来自 `rxjs`。它既像 Observable，又像一个可以主动往外推值的事件总线。
+
+#### 本质是在做什么
+
+在当前项目中：
+
+**`Subject<AgentRunEvent>` 就是一条 run 对应的“实时广播通道”。**
+
+#### 它发挥作用的原理
+
+`publish(event)` 时：
+
+1. 先把事件写进 `events` 历史数组。
+2. 再 `subject.next(event)` 广播给当前已连接的订阅者。
+
+`stream(runId)` 时：
+
+1. 先重放历史 `events`
+2. 再订阅 `subject`
+
+这样就同时兼顾了：
+
+- 晚连接能看到已发生事件
+- 已连接能收到实时事件
+
+这里的“**重放历史 `events`**”需要单独解释一下。
+
+#### “重放历史”到底是什么意思
+
+它不是“把时间倒流再执行一遍真正的业务逻辑”，也不是“重新向 Ollama 发一遍请求”，而是：
+
+**把这个 run 之前已经记录在内存数组 `run.events` 里的事件，再按原顺序重新发给新连上的 SSE 客户端。**
+
+例如：
+
+1. 某个 run 已经先后产生了：
+   - `run_started`
+   - `plan_ready`
+   - `resource_collected`
+2. 这时前端才刚建立 SSE 连接，或者连接断开后重新连上。
+3. `stream(runId)` 会先遍历 `run.events`：
+
+```ts
+for (const event of run.events) {
+  subscriber.next({
+    type: event.type,
+    data: event,
+  });
+}
+```
+
+4. 于是前端虽然“晚到”，但仍然能补收到前面已经发生过的这些事件。
+
+#### 本质是在做什么
+
+本质上它是在做：
+
+**“新订阅者补历史”**。
+
+这样就避免出现一种很差的情况：
+
+- 任务已经跑了一半
+- 你这时才打开页面或刚连上 SSE
+- 结果前端完全不知道前面发生过什么
+
+通过“重放历史”，前端可以先补齐过去，再继续接实时事件。
+
+#### 为什么需要这样做
+
+因为 `Subject` 只负责“从现在开始往后推”。
+
+如果你只订阅 `subject`，那么订阅发生之前已经推过的事件，默认是收不到的。  
+所以当前项目用了“两段式”：
+
+1. 先手动遍历 `run.events`，补发历史
+2. 再订阅 `subject`，接收未来事件
+
+#### 更底层的理解
+
+可以把它类比成聊天记录：
+
+- `events` 像“历史消息记录”
+- `subject` 像“正在实时收到的新消息”
+
+新用户进群时：
+
+1. 先把之前聊天记录补给他看
+2. 再让他开始实时接收新消息
+
+这就是这里“重放历史”的真实含义。
+
+#### 注意点
+
+1. 这里重放的是**内存里已记录的事件对象**，不是重新执行真实业务步骤。
+2. 如果事件很多，重放会带来一定响应开销；当前项目事件量较小，所以问题不大。
+3. 当前历史只存在内存里，所以进程重启后就没有“历史可重放”了。
+
+#### 更底层的原理
+
+如果没有 `Subject`，你就得自己维护“当前所有连接”列表，再手动遍历推送。`Subject` 本质上帮你做了一个多播发布器。
+
+#### 注意点
+
+1. 现在这个状态存储是进程内内存级的，不是持久化队列。
+2. 进程重启后，`Map` 和 `Subject` 里的状态都会丢失。
+3. 如果以后需要多实例部署，内存 `Map` 就不够了，需要 Redis、数据库或消息队列之类的共享状态。
+
+## 四、当前项目里常见的 TypeScript / JavaScript 语法是什么意思
+
+### 3. `Record<string, unknown>`
+
+这表示“键是字符串，值暂时未知的对象”。
+
+本质上是在表达：
+
+**这个对象来自外部输入，所以现在还不能假设它是安全的。**
+
+这也是为什么后面要手动做：
+
+- `typeof body.task === 'string'`
+- `Array.isArray(body.urls)`
+
+这类收窄。
+
+### 4. `Pick<StoredRun, 'id' | 'status' | ...>`
+
+这是一种类型投影，意思是“从 `StoredRun` 里只选出一部分字段组成新类型”。
+
+本质作用是减少重复写类型，同时明确函数只返回某个对象的部分内容。
+
+## 五、后端里用到的 Node / Web 运行时能力是什么
+
+### 1. `process.env`
+
+#### 这是什么
+
+Node 进程的环境变量对象。
+
+#### 本质是在做什么
+
+用外部配置影响程序行为，而不是把配置写死在代码里。
+
+例如：
+
+- `PORT`
+- `OLLAMA_BASE_URL`
+- `OLLAMA_MODEL`
+- `AGENT_MAX_FILES`
+
+#### 注意点
+
+1. `process.env` 里的值默认都是字符串或 `undefined`。
+2. 所以代码里经常要写：
+
+```ts
+Number(process.env.AGENT_MAX_FILES ?? 12)
+```
+
+来做显式转换。
+
+### 2. `process.cwd()`
+
+它表示当前 Node 进程启动时的工作目录。  
+`agent-report.service.ts` 用它来拼默认输出目录。
+
+### 3. `randomUUID()` 来自 `node:crypto`
+
+#### 本质
+
+用于生成全局唯一标识。  
+当前项目里它既用于生成 `runId` 的随机后缀，也用于资源项的 `id`。
+
+#### 为什么要用它
+
+因为 UUID 碰撞概率极低，适合做临时唯一 ID。
+
+### 4. `node:fs/promises`
+
+当前用到了：
+
+- `mkdir`
+- `stat`
+- `writeFile`
+- `readFile`
+- `readdir`
+
+#### 本质是在做什么
+
+这些都是 Node 的异步文件系统 API，用 Promise 形式操作磁盘。
+
+#### 在项目中的作用
+
+- `mkdir`：创建输出目录
+- `writeFile`：写报告文件
+- `stat`：读文件元信息
+- `readFile`：读本地文本资源
+- `readdir`：遍历目录
+
+#### 注意点
+
+1. 这是 I/O 操作，不是纯内存计算，性能与磁盘、权限、路径有效性有关。
+2. 很多地方用了 `try/catch` 后静默跳过，意味着项目当前更偏向“尽量继续采集”，而不是“有一个文件失败就整体失败”。
+
+### 5. `Dirent` 与 `Stats`
+
+它们分别表示：
+
+- `Dirent`：目录项信息，例如是不是文件、是不是目录。
+- `Stats`：文件状态信息，例如大小、时间等。
+
+本质上是文件系统元数据对象。
+
+### 6. `node:path`
+
+当前用到了：
+
+- `path.resolve`
+- `path.join`
+- `path.basename`
+- `path.extname`
+
+#### 本质是在做什么
+
+它本质上是跨平台的路径拼接与解析工具，避免你手写斜杠导致路径错误。
+
+#### 注意点
+
+Windows 和 Unix 路径分隔符不同，所以在 Node 服务里尽量用 `path`，不要自己拼字符串。
+
+### 7. `fetch`、`AbortController`、`URL`
+
+#### `fetch`
+
+这是现代 Web/Node 运行时提供的 HTTP 请求 API。
+
+在当前项目中它被用于：
+
+1. 调用 Ollama 的 `/api/chat`
+2. 拉取网页内容做资源采集
+
+#### `AbortController`
+
+它的本质是“取消异步请求的控制器”。
+
+当前代码里是用：
+
+```ts
+const controller = new AbortController();
+const timer = setTimeout(() => controller.abort(), timeoutMs);
+```
+
+来实现超时中断。
+
+#### `URL`
+
+用于解析和校验 URL。  
+如果 `new URL(rawUrl)` 抛错，就说明不是合法 URL。
+
+#### 更底层的原理
+
+`AbortController` 会向 `fetch` 传入一个 `signal`。  
+一旦 `abort()` 被调用，运行时会中断该请求，并让 `fetch` 抛异常。
+
+#### 注意点
+
+1. 超时是调用方自己组合出来的，不是 `fetch` 自动带超时。
+2. URL 合法不代表目标站点可访问。
+3. 生产环境还要考虑 DNS、TLS、代理、证书、重试等问题。
+
+## 六、第三方包在这个后端里分别做什么
+
+### 1. `@nestjs/common`
+
+#### 这是什么
+
+Nest 最常用的公共能力包。
+
+#### 当前项目里它提供了什么
+
+- `@Module`
+- `@Controller`
+- `@Injectable`
+- `@Get`
+- `@Post`
+- `@Sse`
+- `@Body`
+- `@Param`
+- `BadRequestException`
+- `NotFoundException`
+- `ServiceUnavailableException`
+- `MessageEvent` 类型
+
+#### 本质
+
+它相当于 Nest 的“日常开发主工具箱”。
+
+### 2. `@nestjs/core`
+
+主要提供 `NestFactory`。  
+它更偏向 Nest 的核心启动能力和框架内部机制。
+
+### 3. `@nestjs/platform-express`
+
+#### 这是什么
+
+这是 Nest 当前项目默认依赖的 HTTP 平台适配器。
+
+#### 本质是在做什么
+
+Nest 不是直接裸写 Node HTTP，而是通过平台适配层运行在 Express 之上。
+
+也就是说，你虽然平时写的是 Nest 风格代码，但底层真正接住 HTTP 请求的，通常还是 Express 这一层。
+
+这里你问得非常对，**Express 本身当然也是 Node.js 生态里的 Web 框架**。  
+更准确的表述应该是：
+
+- **Node.js** 是运行时，不是 Web 框架。
+- **Express** 是构建在 Node.js 运行时之上的 Web 框架。
+- **Nest** 也是构建在 Node.js 运行时之上的后端框架，但它默认不是直接裸用 Node HTTP，而是通常借助 **Express 作为底层 HTTP 平台适配器**。
+
+#### 更准确地说，Nest 和 Express 到底是什么关系
+
+可以把这三层理解成：
+
+1. **Node.js**
+   提供 JavaScript 运行环境、网络能力、文件系统、事件循环。
+2. **Express**
+   在 Node.js 之上封装了 HTTP 路由、中间件、请求响应对象等 Web 开发能力。
+3. **Nest**
+   再往上提供模块化、依赖注入、装饰器路由、守卫、拦截器、管道、异常过滤器等更高层的工程化结构。
+
+所以不是“Express 不是框架”，而是：
+
+**Express 是更底层、更轻量的 Node Web 框架；Nest 是更上层、更强调架构和组织方式的后端框架。**
+
+#### 为什么说“底层真正接住 HTTP 请求的通常还是 Express”
+
+因为当前项目依赖里有：
+
+- `@nestjs/platform-express`
+
+这表示 Nest 最终会把：
+
+- 路由注册
+- 请求对象封装
+- 响应发送
+- 中间件链路
+
+这些 HTTP 层工作，落到 Express 适配器上。
+
+也就是说，当浏览器或前端客户端发来一个 HTTP 请求时，真正最先在 HTTP 平台层接住它的，通常是 Express 这层；Nest 再在这个基础上加上自己的控制器、依赖注入、异常系统等高层抽象。
+
+#### 那 Nest 和 Express 谁“更大”
+
+不是简单的“谁替代谁”，而是抽象层次不同：
+
+- Express 更接近 HTTP 和中间件本身。
+- Nest 更接近“工程化应用框架”。
+
+你可以把 Express 理解为更灵活但更原始的底层框架；把 Nest 理解为建立在这些平台能力之上的高级组织层。
+
+#### 一个更直观的类比
+
+如果把 Web 服务比作盖房子：
+
+- Node.js 像土地和基础设施
+- Express 像砖、水泥、钢筋和基础施工方式
+- Nest 像整套建筑设计规范、分层图纸和施工管理体系
+
+所以你写 Nest 时，经常感觉自己没直接碰 Express；但在默认平台下，Nest 的很多 HTTP 能力确实是通过 Express 承接的。
+
+#### 注意点
+
+以后如果换成 Fastify，很多业务代码可以不变，因为 Nest 把平台差异抽象掉了。
+
+### 4. `reflect-metadata`
+
+#### 这是什么
+
+这是 TypeScript 装饰器生态里非常关键的元数据支持库。
+
+#### 本质是在做什么
+
+它让“装饰器附加的元数据”和“设计时类型信息”可以在运行时被读取。
+
+Nest 的依赖注入、路由扫描、参数解析，很多都依赖这层能力。
+
+#### 更底层的原理
+
+JavaScript 本身原生并不自动提供完整的类型反射信息。`reflect-metadata` 相当于给运行时补了一层元数据存储/读取机制。
+
+### 6. `cheerio`
+
+#### 这是什么
+
+一个服务端 HTML 解析库，经常被称为“服务端版 jQuery 风格 API”。
+
+#### 当前项目里它在做什么
+
+```ts
+const $ = load(html);
+$('script, style, noscript').remove();
+const title = $('title').first().text().trim();
+const text = $('body').text().replace(/\s+/g, ' ').trim();
+```
+
+它的本质是：
+
+**把 HTML 字符串解析成可遍历、可选择的 DOM 结构，然后提取正文文本。**
+
+#### 为什么它能起作用
+
+因为网页源码本质上就是文本。`cheerio` 先把文本解析成 DOM 树，再提供 CSS 选择器风格接口让你查节点、删节点、取文本。
+
+#### 注意点
+
+1. `cheerio` 不执行页面 JavaScript，所以它只适合静态 HTML 或 SSR 页面。
+2. 如果内容是前端运行后动态注入的，直接 `fetch HTML` 可能拿不到最终页面文本。
+3. 这类正文提取通常比较粗糙，真实生产里可能需要更复杂的正文抽取策略。
+
+## 七、当前项目中的具体业务类，本质上分别是什么
+
+### 1. `AgentController`
+
+它是**协议入口层**。  
+负责把 HTTP/SSE 请求转成业务调用，并做入参归一化与基础校验。
+
+### 2. `AgentService`
+
+它是**业务编排层**。  
+负责把“规划、采集、摘要、聚合、写报告、发事件”串成一个完整流程。
+
+### 3. `AgentRunStoreService`
+
+它是**运行态内存状态中心**。  
+负责：
+
+- 按 `runId` 保存状态
+- 存事件历史
+- 给 SSE 提供重放和实时广播
+
+### 4. `OllamaProvider`
+
+它是**外部模型服务适配层**。  
+本质上是在把“调用本地 Ollama HTTP 接口”的细节封装起来，让业务层直接调用 `completeText` / `completeJson`。
+
+### 5. `ResourceCollectionService`
+
+它是**资源采集层**。  
+把“目录遍历、文件过滤、文本截断、网页抓取、HTML 提取”都封在一起。
+
+### 6. `AgentReportService`
+
+它是**产物输出层**。  
+负责把运行结果写成：
+
+- `report.md`
+- `report.json`
+- `sources.json`
+
+## 八、开发工具链里的包和工具都是什么意思
+
+下面这部分主要来自 `package.json`。
+
+### 1. `@nestjs/cli`
+
+Nest 官方命令行工具。  
+用于 `nest build`、`nest start` 等命令。
+
+### 2. `@nestjs/schematics`
+
+Nest 的代码生成模板工具。  
+通常用于脚手架生成模块、控制器、服务等。
+
+### 3. `@nestjs/testing`
+
+Nest 的测试辅助库。  
+用于在测试环境中创建测试模块、测试应用实例。
+
+### 4. `typescript`
+
+TypeScript 编译器本体。  
+负责类型检查和把 TS 编译成 JS。
+
+### 5. `ts-node`
+
+在 Node 环境直接执行 TypeScript 的工具。  
+常用于测试、脚本、调试场景。
+
+### 6. `ts-jest`
+
+Jest 和 TypeScript 之间的桥接层。  
+让 Jest 能理解并运行 `.ts` 测试文件。
+
+### 7. `ts-loader`
+
+常用于构建流程里处理 TypeScript。  
+当前项目未必在业务代码中直接感知它，但它属于 TS 构建工具链的一部分。
+
+### 8. `tsconfig-paths`
+
+用于让运行时理解 `tsconfig` 里的路径别名配置。  
+尤其在调试或测试命令里常见。
+
+### 9. `eslint`、`typescript-eslint`
+
+#### 本质
+
+静态代码质量检查工具。
+
+- `eslint`：规则执行器
+- `typescript-eslint`：让 ESLint 能理解 TypeScript 语法与类型信息
+
+它们不是在运行时起作用，而是在开发阶段帮助你更早发现问题。
+
+### 10. `prettier`
+
+代码格式化工具。  
+它的目标是统一代码风格，而不是检查业务逻辑对错。
+
+### 11. `jest`
+
+JavaScript/TypeScript 常用测试框架。  
+负责执行测试、断言、mock、统计结果等。
+
+### 12. `supertest`
+
+HTTP 接口测试库。  
+让你在测试里像发真实请求一样去测 Nest 应用。
+
+### 13. `source-map-support`
+
+让运行时报错堆栈更容易映射回 TypeScript 源码位置。  
+本质上是改善调试体验。
+
+### 14. `@types/node`、`@types/jest`、`@types/supertest`、`@types/express`
+
+这些是类型定义包。  
+它们本质上是“给 TypeScript 用的说明书”，告诉编译器这些库的 API 长什么样。
+
+### 15. `globals`、`@eslint/js`、`@eslint/eslintrc`、`eslint-config-prettier`、`eslint-plugin-prettier`
+
+这些属于 ESLint / Prettier 周边工具链。
+
+它们分别用于：
+
+- 提供基础 ESLint 规则集
+- 兼容新旧 ESLint 配置方式
+- 处理全局变量配置
+- 让 ESLint 与 Prettier 协同工作
+- 把 Prettier 格式问题接入 ESLint 流程
+
+## 九、`main.ts` 里的应用级配置是什么意思
+
+### 1. `app.enableCors({ origin: true })`
+
+#### 这是什么
+
+开启 CORS。
+
+#### 本质是在做什么
+
+告诉浏览器：允许跨源前端访问这个后端。
+
+#### 为什么有必要
+
+当前前端 `AiAgent` 和后端 `agent-server` 很可能是不同端口，不同端口在浏览器眼里就是不同源。
+
+如果不开 CORS，浏览器会拦截跨域请求。
+
+#### 注意点
+
+`origin: true` 表示动态回显来源，开发期方便，但生产环境通常应该更精确地限制允许来源。
+
+### 2. `app.setGlobalPrefix('api')`
+
+它的本质是给所有路由统一加前缀，便于：
+
+- 区分 API 与静态页面
+- 做版本管理
+- 让路由结构更清晰
+
+### 3. `app.listen(process.env.PORT ?? 3000)`
+
+它的本质是：
+
+**让应用开始监听某个 TCP 端口，对外提供 HTTP 服务。**
+
+更底层一点，就是底层 HTTP 服务器开始接受网络连接。
+
+## 十、为什么这些概念有必要理解
+
+如果只会“照着模板写”，短期内也许能跑通，但一旦遇到下面这些问题就会很难排查：
+
+1. 为什么某个 service 注入失败。
+2. 为什么某个路由根本没生效。
+3. 为什么 SSE 能持续推送，而普通 `return {}` 不行。
+4. 为什么 `throw new BadRequestException()` 会自动变成 400。
+5. 为什么 `process.env` 取出来要自己转数字。
+6. 为什么 `cheerio` 抓不到动态页面内容。
+7. 为什么内存 `Map` 在单机能跑，多实例部署就出问题。
+
+理解这些概念，本质上是在理解：
+
+**这个后端不是“很多文件碰巧连在一起”，而是 Nest、TypeScript、Node、RxJS、HTTP 协议、文件系统、以及开发工具链共同协作出来的一套运行机制。**
+
+## 十一、与当前项目强相关的注意点
+
+### 1. `AgentRunStoreService` 现在是内存态
+
+这意味着：
+
+1. 进程重启后运行历史会丢失。
+2. 只能天然适合单进程。
+3. 如果未来要水平扩展，必须考虑共享状态方案。
+
+### 2. SSE 很适合这个场景，但要注意部署环境
+
+开发环境里 SSE 往往比较顺；生产里如果前面有 Nginx、网关、CDN，需要注意：
+
+- 连接超时
+- 代理缓冲
+- CORS
+- keep-alive
+- 断线重连行为
+
+### 3. `cheerio` 不是浏览器
+
+它不会执行前端 JS，所以“页面源码里没有正文”的站点，抓取结果可能很差。
+
+### 4. `fetch` 超时是手动拼出来的
+
+项目里用了 `AbortController + setTimeout` 做超时控制。  
+这是一种常见做法，但不等于自动重试，也不等于网络一定可靠。
+
+### 5. 目前没有引入更重的 Nest 校验体系
+
+当前控制器使用的是手动归一化方式，而不是：
+
+- DTO
+- `class-validator`
+- `ValidationPipe`
+
+这意味着当前实现更轻量，但规则扩展时也更依赖手写校验逻辑。
+
+## 十二、一句话总总结
+
+当前 `agent-server` 的核心运行模式可以总结为：
+
+**Nest 用模块、控制器、服务和依赖注入把结构搭起来；Node 提供文件系统、网络和环境变量能力；RxJS 帮 SSE 建立流；`fetch` 和 `cheerio` 负责外部资源获取；Ollama 负责模型推理；工具链则保证构建、格式化、静态检查和测试能顺利进行。**
