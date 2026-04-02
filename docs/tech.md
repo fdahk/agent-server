@@ -1637,3 +1637,951 @@ HTTP 接口测试库。
 当前 `agent-server` 的核心运行模式可以总结为：
 
 **Nest 用模块、控制器、服务和依赖注入把结构搭起来；Node 提供文件系统、网络和环境变量能力；RxJS 帮 SSE 建立流；`fetch` 和 `cheerio` 负责外部资源获取；Ollama 负责模型推理；工具链则保证构建、格式化、静态检查和测试能顺利进行。**
+
+---
+
+# `lint-staged.config.mjs` 被 ESLint Project Service 误判为不在项目中的问题记录
+
+## 问题描述
+
+本次报错发生在根目录配置文件 `lint-staged.config.mjs` 上，错误信息为：
+
+```txt
+Parsing error: D:\agent-server\lint-staged.config.mjs was not found by the project service. Consider either including it in the tsconfig.json or including it in allowDefaultProject.
+```
+
+报错文件内容本身非常简单：
+
+```js
+export default {
+  '*.{js,ts}': ['eslint --fix', 'prettier --write'],
+  '*.{json,md,yml,yaml}': ['prettier --write'],
+};
+```
+
+也就是说，问题并不是这份 `lint-staged` 配置写错了，而是 **ESLint 在解析这个 `.mjs` 文件时，错误地把它当成了必须受 TypeScript project service 管理的“类型感知文件”**。
+
+## 问题原因
+
+这次问题的根因有两层。
+
+### 1. 当前 ESLint 配置启用了 TypeScript 的 project service
+
+项目中的 `eslint.config.mjs` 原本启用了：
+
+```js
+parserOptions: {
+  projectService: true,
+  tsconfigRootDir: import.meta.dirname,
+}
+```
+
+这意味着：
+
+1. `typescript-eslint` 不只是做语法检查。
+2. 它还会尝试为文件建立 TypeScript 项目上下文。
+3. 某些规则会依赖“类型信息”才能运行。
+
+这类配置很适合真正属于 TS 项目的源码文件，例如：
+
+- `src/**/*.ts`
+- `test/**/*.ts`
+
+但不一定适合项目根目录下那些独立的 JS / MJS 工具配置文件。
+
+### 2. `lint-staged.config.mjs` 不是 TypeScript 项目服务要管理的源码文件
+
+`lint-staged.config.mjs` 是：
+
+- 一个 `.mjs` 文件
+- 根目录工具配置文件
+- 不参与当前 TS 项目的源码编译
+
+它本质上属于“Node 运行的工具配置”，不是“TypeScript 项目里的业务源码”。
+
+当 `typescript-eslint` 的 project service 试图为它建立类型项目上下文时，就会发现：
+
+> 这个文件不在当前 TypeScript 项目管理的范围里。
+
+于是产生了解析错误。
+
+### 3. 第一次尝试只加 `allowDefaultProject`，虽然方向对，但还不够稳
+
+最开始的修法是尝试在 `projectService` 里给 `lint-staged.config.mjs` 加默认项目兜底。
+
+这个思路并不完全错，但在当前 ESLint 组合配置下，还有两个现实问题：
+
+1. `.mjs` 文件本身更适合按“普通 JS 配置文件”处理，而不是继续让 type-checked 规则参与。
+2. 项目里还额外启用了依赖类型信息的规则：
+   - `@typescript-eslint/no-floating-promises`
+   - `@typescript-eslint/no-unsafe-argument`
+
+即便 parser 层不再报原始 project service 错误，这些规则依旧可能对 `.mjs` 文件继续要求类型信息。
+
+所以仅靠 `allowDefaultProject` 在这个项目里不够彻底。
+
+## 解决方案
+
+最终采用的方案是：
+
+**把 `**/*.mjs` 配置文件从 type-checked TypeScript 规则体系中单独分离出来，按普通 Node ESM 配置文件处理。**
+
+具体做了两件事：
+
+1. 对 `**/*.mjs` 使用 `typescript-eslint` 的 `disableTypeChecked` 配置。
+2. 对 `**/*.mjs` 关闭当前自定义里依赖类型信息的规则：
+   - `@typescript-eslint/no-floating-promises`
+   - `@typescript-eslint/no-unsafe-argument`
+
+同时保留：
+
+- 普通 ESLint 推荐规则
+- Prettier 规则
+- Node 全局变量环境
+
+这样 `.mjs` 仍然会被 lint，但不会再被错误地当成需要 TS 项目类型服务的文件。
+
+## 解决问题的每一步及详细解释
+
+### 第一步：先真实复现问题，而不是只看 IDE 提示
+
+执行：
+
+```bash
+pnpm exec eslint "lint-staged.config.mjs"
+```
+
+得到最初的关键报错：
+
+```txt
+Parsing error: D:\agent-server\lint-staged.config.mjs was not found by the project service.
+```
+
+这一步的意义是：
+
+1. 确认问题不只是编辑器缓存。
+2. 确认是 ESLint 规则链路里的真实问题。
+3. 把排查重心放在 `eslint.config.mjs` 上，而不是 `lint-staged.config.mjs` 内容本身。
+
+### 第二步：检查现有 ESLint 配置，定位到 `projectService: true`
+
+查看 `eslint.config.mjs` 后发现，全局启用了：
+
+```js
+parserOptions: {
+  projectService: true,
+  tsconfigRootDir: import.meta.dirname,
+}
+```
+
+这说明 ESLint 正在以“带 TypeScript 类型信息”的方式处理文件。
+
+这一步的核心判断是：
+
+**问题不是 `.mjs` 语法错误，而是 `.mjs` 文件被送进了不合适的解析模式。**
+
+### 第三步：验证 `typescript-eslint` 是否提供关闭 type-checked 的官方配置
+
+为了避免拍脑袋硬配，我检查了 `typescript-eslint` 当前版本可用配置，确认存在：
+
+```txt
+disableTypeChecked
+```
+
+这一步的意义是：
+
+1. 尽量使用官方提供的配置能力，而不是手写一堆脆弱的 parser hack。
+2. 保证解决方案与当前工具链兼容。
+
+### 第四步：给 `**/*.mjs` 增加单独 override，关闭 type-checked 解析
+
+在 `eslint.config.mjs` 中加入：
+
+```js
+{
+  files: ['**/*.mjs'],
+  extends: [tseslint.configs.disableTypeChecked],
+  languageOptions: {
+    sourceType: 'module',
+    globals: {
+      ...globals.node,
+    },
+    parserOptions: {
+      projectService: false,
+    },
+  },
+}
+```
+
+这一步的本质是：
+
+**告诉 ESLint：遇到 `.mjs` 时，不要再试图把它纳入 TS project service。**
+
+同时：
+
+- `sourceType: 'module'` 是因为 `.mjs` 本来就是 ESM 语义。
+- `globals.node` 是因为这类配置文件运行在 Node 环境里。
+
+### 第五步：继续验证，发现还有依赖类型信息的规则报错
+
+在加入 `.mjs` override 之后，再次执行 ESLint，出现了新的错误：
+
+```txt
+Error while loading rule '@typescript-eslint/no-floating-promises':
+You have used a rule which requires type information, but don't have parserOptions set to generate type information for this file.
+```
+
+这一步非常重要，因为它说明：
+
+1. parser 层的问题虽然处理了。
+2. 但规则层仍然有 type-aware 规则在对 `.mjs` 生效。
+
+也就是说，这不是单一配置点的问题，而是**解析层和规则层都要一起处理**。
+
+### 第六步：对 `.mjs` 单独关闭依赖类型信息的规则
+
+继续增加一个 `.mjs` 专属规则覆盖：
+
+```js
+{
+  files: ['**/*.mjs'],
+  rules: {
+    '@typescript-eslint/no-floating-promises': 'off',
+    '@typescript-eslint/no-unsafe-argument': 'off',
+  },
+}
+```
+
+这一步的本质是：
+
+**让这类配置文件只接受适合它的 lint 规则，不再强行使用依赖 TS 类型系统的规则。**
+
+### 第七步：再次执行 ESLint，确认解析错误已经消失
+
+再次执行：
+
+```bash
+pnpm exec eslint "lint-staged.config.mjs"
+```
+
+此时 project service 的解析错误已经消失，只剩下：
+
+```txt
+prettier/prettier
+Insert `⏎`
+```
+
+这一步说明：
+
+1. 真正的“解析错误”已经被修复。
+2. 剩下只是普通格式问题，与项目服务无关。
+
+## 方案有效的底层原理
+
+### 1. 为什么会报 “was not found by the project service”
+
+`typescript-eslint` 在启用 `projectService: true` 后，会尝试把当前文件交给 TypeScript 项目服务处理。
+
+TypeScript 项目服务的思路是：
+
+1. 找到与文件关联的 TS 项目上下文。
+2. 建立类型信息。
+3. 让需要类型信息的 ESLint 规则可运行。
+
+但 `lint-staged.config.mjs` 这种文件：
+
+- 不属于当前 TS 源码集合
+- 不应该强依赖 TS 类型项目
+
+所以 project service 无法给它建立预期上下文，就报了“找不到这个文件对应项目”的错误。
+
+### 2. 为什么 `disableTypeChecked` 有效
+
+`disableTypeChecked` 的作用不是“关闭所有 lint”，而是：
+
+**关闭需要 TypeScript 类型信息参与的那一层能力。**
+
+也就是说：
+
+- 普通语法检查仍然可以做
+- Prettier 仍然可以做
+- Node 环境规则仍然可以做
+- 但不再要求这份 `.mjs` 文件必须属于某个 TS 项目
+
+这就和文件本身的性质匹配上了。
+
+### 3. 为什么还要额外关闭 `no-floating-promises` / `no-unsafe-argument`
+
+因为这些规则属于**依赖类型信息的规则**。  
+即使 parser 已经不再通过 project service 给 `.mjs` 供类型信息，只要规则仍启用，它们就会继续报“没有类型信息不能运行”。
+
+所以真正完整的解决方案必须同时满足：
+
+1. parser 不再强求 `.mjs` 走 TS project service
+2. rules 里也不再对 `.mjs` 启用 type-aware 规则
+
+### 4. 为什么不把 `lint-staged.config.mjs` 强行塞进 `tsconfig.json`
+
+理论上可以这样做，但在当前项目里并不是最自然的方案。
+
+原因是：
+
+1. `lint-staged.config.mjs` 不是 TypeScript 业务源码。
+2. 它只是一个 Node 工具配置文件。
+3. 把这类文件强行纳入 TS 项目，容易让“源码项目”和“工具配置项目”边界变模糊。
+
+因此更合理的处理方式是：
+
+**承认它就是一个独立的 `.mjs` 配置文件，并给它单独一套更合适的 lint 处理路径。**
+
+## 需要注意的点
+
+1. 以后如果项目根目录再新增类似文件，例如：
+   - `commitlint.config.mjs`
+   - `vitest.config.mjs`
+   - `prettier.config.mjs`
+   那么它们也可能需要复用同类 `.mjs` override 逻辑。
+
+2. 这类文件通常更适合按“Node 配置文件”处理，而不是按“TS 业务源码”处理。
+
+3. 如果以后你把 ESLint 规则进一步拆分，建议把：
+   - Type-aware TS 规则
+   - JS/MJS 配置文件规则
+   明确分组，否则后续还会出现类似冲突。
+
+4. 如果命令行已通过，但 IDE 仍显示旧错误，很多时候只是编辑器的 ESLint 诊断缓存还没刷新，不代表修复无效。
+
+## 这次修复结论
+
+这次问题不是 `lint-staged.config.mjs` 内容写错，也不是 `lint-staged` 工具本身有问题，而是：
+
+**带 TypeScript 类型信息的 ESLint 配置把一个独立的 `.mjs` 配置文件错误地纳入了 project service 管理范围。**
+
+最终修复方式是：
+
+1. 为 `**/*.mjs` 单独关闭 type-checked 解析。
+2. 为 `**/*.mjs` 关闭依赖类型信息的规则。
+3. 修复该文件自身的 Prettier 格式问题。
+
+最终验证结果：
+
+```bash
+pnpm exec eslint "lint-staged.config.mjs"
+```
+
+通过，`exit code 0`。
+
+---
+
+# ESLint 是怎么检测“代码是否正确”的
+
+## 先说结论：ESLint 并不是在“运行你的代码”
+
+很多人第一次接触 ESLint 时，会误以为它像测试框架一样真的去执行代码，然后判断对不对。  
+其实不是。
+
+ESLint 的核心工作方式是：
+
+**把源码解析成结构化语法树（AST），然后用一组规则去遍历这棵树，检查代码结构、写法、上下文和一部分类型信息，看它是否违反约定。**
+
+所以它检测的“正确”，严格说并不是：
+
+- 程序运行结果一定正确
+
+而是：
+
+- 语法是否成立
+- 写法是否符合规则
+- 是否存在明显危险模式
+- 在 TypeScript 场景下，类型信息能否证明这段代码安全
+
+换句话说，ESLint 更接近：
+
+**静态代码分析器**
+
+而不是：
+
+**运行时验证器**
+
+## 一、必要概念 / 名词解释 / 背景知识
+
+### 1. 什么叫“静态分析”
+
+静态分析的意思是：
+
+**不运行程序，只看源码本身，就尝试判断问题。**
+
+例如下面这段代码：
+
+```ts
+const value = foo.bar();
+```
+
+ESLint 不需要真的运行 `foo.bar()`，也不需要真的等程序执行到这一行。  
+它只要读源码，就可以分析：
+
+1. 这里是不是合法语法
+2. `foo` 是否未定义
+3. 某些规则是否禁止这种写法
+4. 如果有类型信息，`foo.bar()` 是否可能是不安全调用
+
+### 2. 什么是 AST（Abstract Syntax Tree，抽象语法树）
+
+这是理解 ESLint 的核心概念。
+
+当你写：
+
+```ts
+const sum = a + b;
+```
+
+对人来说，它就是一行代码。  
+但对 ESLint 来说，它会先被解析成一种“树状结构”，大概像这样：
+
+```txt
+VariableDeclaration
+  VariableDeclarator
+    Identifier(sum)
+    BinaryExpression(+)
+      Identifier(a)
+      Identifier(b)
+```
+
+也就是说，ESLint 不是按“字符串匹配”检查代码，而是按**语法结构**检查代码。
+
+这也是为什么它能区分：
+
+- 变量声明
+- 函数调用
+- Promise 表达式
+- import/export
+- class
+- decorator
+
+等不同代码结构。
+
+### 3. 什么是 parser（解析器）
+
+ESLint 自己不是直接理解所有语言特性的。  
+它需要 parser 把源码转成 AST。
+
+在普通 JS 项目里，ESLint 默认 parser 足够处理很多情况。  
+但在 TypeScript 项目里，一般会使用 `typescript-eslint` 提供的 parser。
+
+也就是说，ESLint 的第一步通常是：
+
+1. 读取文件文本
+2. 交给 parser
+3. parser 产出 AST
+4. ESLint 规则再基于 AST 进行分析
+
+### 4. 什么是 rule（规则）
+
+ESLint 真正“检查问题”的执行单元就是 rule。
+
+例如：
+
+- `no-unused-vars`
+- `no-undef`
+- `@typescript-eslint/no-floating-promises`
+- `@typescript-eslint/no-unsafe-argument`
+- `prettier/prettier`
+
+每条 rule 都可以理解成一个小程序：
+
+**它知道自己应该监听哪类语法节点，并在节点出现时做检查。**
+
+## 二、ESLint 本质上是在做什么
+
+它本质上在做三件事：
+
+1. **把代码结构化**  
+   从文本变成 AST。
+
+2. **把规则应用到语法结构上**  
+   看代码有没有违反规范或潜在问题。
+
+3. **输出诊断结果，必要时自动修复**  
+   比如 warning、error，或者 `--fix` 自动修改部分代码。
+
+所以 ESLint 并不是“判断程序业务逻辑完全正确”，而是在回答这种问题：
+
+- 这段写法是否违反团队规则？
+- 这段代码是否存在已知危险模式？
+- 这个变量是不是没用？
+- 这个 Promise 是否没处理？
+- 这个参数传递是不是类型不安全？
+
+## 三、ESLint 发挥作用的原理
+
+### 第一步：读取文件
+
+比如你执行：
+
+```bash
+eslint "src/**/*.ts"
+```
+
+ESLint 先会根据命令行参数、glob、ignore 配置，确定哪些文件需要处理。
+
+在你这个项目里，`package.json` 里的 lint 命令就是：
+
+```json
+"lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix"
+```
+
+它的意思是：
+
+- 只处理 `src`、`apps`、`libs`、`test` 这些目录下的 `.ts` 文件
+- 并尝试自动修复可修复问题
+
+这说明 ESLint 默认并不是“无脑扫描整个磁盘所有文件”，而是：
+
+**按命令和配置匹配要处理的文件。**
+
+### 第二步：根据配置决定解析方式和规则集合
+
+ESLint 会读取 `eslint.config.mjs`，再决定：
+
+1. 对哪些文件用哪些规则
+2. 用什么 parser
+3. 这些文件处于什么语言环境
+4. 是否需要类型信息
+
+你当前项目里的配置是：
+
+```js
+export default tseslint.config(
+  {
+    ignores: ['eslint.config.mjs'],
+  },
+  eslint.configs.recommended,
+  ...tseslint.configs.recommendedTypeChecked,
+  eslintPluginPrettierRecommended,
+  {
+    languageOptions: {
+      globals: {
+        ...globals.node,
+        ...globals.jest,
+      },
+      sourceType: 'commonjs',
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  },
+  {
+    files: ['**/*.mjs'],
+    extends: [tseslint.configs.disableTypeChecked],
+    ...
+  },
+);
+```
+
+这表示：
+
+- 普通 TS 文件启用推荐规则和带类型信息的规则
+- `.mjs` 文件单独走另一套更轻的规则
+
+### 第三步：parser 把源码转成 AST
+
+例如某个 `.ts` 文件进入检查后，parser 会把源码解析成 AST。
+
+如果源码本身连语法都不合法，例如少个括号、import 写错、对象字面量不完整，parser 这一步就会直接报错。
+
+这类错误通常就是：
+
+- Parsing error
+
+所以有时候“ESLint 报错”其实并不是 rule 在报，而是**代码连语法树都建不出来**。
+
+### 第四步：规则遍历 AST
+
+一旦 AST 生成成功，ESLint 会把注册的规则跑起来。
+
+每条规则通常只关注自己关心的节点类型。  
+例如：
+
+- 有的规则关心 `VariableDeclaration`
+- 有的规则关心 `CallExpression`
+- 有的规则关心 `AwaitExpression`
+- 有的规则关心 `ImportDeclaration`
+
+比如：
+
+```ts
+const x = 1;
+```
+
+`no-unused-vars` 这类规则就会在变量声明和变量引用之间建立关联，判断：
+
+- 声明了没有
+- 后面有没有真正用到
+
+### 第五步：规则输出诊断结果
+
+如果规则认为有问题，就会输出：
+
+- error
+- warning
+
+并附带：
+
+- 文件位置
+- 规则名
+- 问题描述
+
+例如：
+
+```txt
+4:3  error  Insert `⏎`  prettier/prettier
+```
+
+这就说明：
+
+1. 第 4 行第 3 列有问题
+2. 问题级别是 error
+3. 来源规则是 `prettier/prettier`
+
+### 第六步：可修复规则可以自动改代码
+
+如果规则支持 autofix，那么执行：
+
+```bash
+eslint --fix
+```
+
+时，ESLint 会把修复结果重新写回文件。
+
+不过要注意：
+
+**不是所有规则都能自动修。**
+
+像：
+
+- 格式问题
+- 某些简单风格问题
+
+通常可修。
+
+但像：
+
+- 业务逻辑错误
+- 不明确的类型设计问题
+- 可能引发语义变化的问题
+
+很多规则不会自动改。
+
+## 四、ESLint 是怎么判断“代码是否正确”的
+
+这里要特别讲清楚“正确”这个词。
+
+ESLint 检测的“正确”大致分 4 个层次。
+
+### 1. 语法正确
+
+这是最基础的一层。
+
+例如：
+
+```ts
+const a = ;
+```
+
+这类代码 parser 连 AST 都建不出来，所以直接报语法解析错误。
+
+### 2. 规则正确
+
+即代码是否符合某些规范或最佳实践。
+
+例如：
+
+- 变量不能定义了不用
+- 不允许某些危险写法
+- import 顺序要符合规则
+- Promise 不能随便丢着不处理
+
+这类“正确”不是 JavaScript 引擎自己判断的，而是**团队或社区把经验沉淀成规则**。
+
+### 3. 类型层面的正确
+
+这一步是 `typescript-eslint` 的增强能力。
+
+例如：
+
+```ts
+function callUser(input: any) {
+  return doSomething(input.value);
+}
+```
+
+如果启用了依赖类型信息的规则，它可以进一步分析：
+
+- `input` 类型是否不安全
+- `input.value` 是否存在不安全访问
+- Promise 是否没处理
+
+这类检查必须依赖 TypeScript 类型系统，不是仅靠语法就能知道的。
+
+### 4. 格式层面的正确
+
+这是 Prettier 参与进来的层次。  
+虽然它不属于“业务正确”，但在工程工具链里，通常也被统一当成 lint 结果的一部分。
+
+例如你之前看到的：
+
+```txt
+prettier/prettier
+Insert `⏎`
+```
+
+本质上是在说：
+
+**这份代码的排版不符合当前项目格式规则。**
+
+## 五、作用过程的底层原理
+
+如果更底层一点看，ESLint 的执行链路大致是：
+
+1. **读取文件文本**
+2. **根据文件名匹配配置**
+3. **交给 parser 生成 AST**
+4. **建立作用域和引用关系**
+5. **运行规则访问器（visitor）**
+6. **收集问题**
+7. **必要时应用 autofix**
+8. **输出结果**
+
+这里有两个底层点很关键。
+
+### 1. Visitor 模式
+
+很多 ESLint 规则底层采用的是 visitor 模式。
+
+简单理解就是：
+
+- 规则先声明“我关心哪些节点”
+- ESLint 遍历 AST 时，遇到这些节点就回调规则逻辑
+
+例如伪代码可以理解成：
+
+```js
+create(context) {
+  return {
+    CallExpression(node) {
+      // 检查函数调用是否符合规则
+    },
+    VariableDeclarator(node) {
+      // 检查变量声明是否符合规则
+    },
+  };
+}
+```
+
+所以规则不是“正则匹配整份文件”，而是**面向 AST 节点做结构化检查**。
+
+### 2. 类型感知规则为什么更重
+
+像 `@typescript-eslint/no-floating-promises` 这种规则，不能只看 AST。
+
+它还需要问 TypeScript：
+
+- 这个表达式的类型是什么？
+- 它是不是 Promise？
+- 这个 Promise 有没有被 `await`、`return` 或显式处理？
+
+这就是为什么启用 type-checked 规则后：
+
+- 检查更强
+- 配置更复杂
+- 性能开销更大
+- 更容易和工具配置文件冲突
+
+因为此时 ESLint 已不再只是“语法树检查器”，而是开始部分依赖 TS 编译器服务。
+
+## 六、为什么 ESLint 有时能发现 bug，有时又不行
+
+这是一个非常关键的认识。
+
+ESLint 能发现很多问题，但它不能证明程序一定没 bug。
+
+### ESLint 擅长发现的
+
+1. 语法错误
+2. 明显的危险写法
+3. 违反团队规范的代码
+4. 一部分类型不安全问题
+5. 一部分 Promise / async 使用问题
+6. 一部分无用代码和死代码线索
+
+### ESLint 不擅长或做不到的
+
+1. 业务逻辑是否符合真实需求
+2. 复杂运行时状态下是否一定正确
+3. 某些依赖真实输入、真实网络、真实数据库的错误
+4. UI 交互结果是否符合预期
+5. 算法结果是否真正正确
+
+所以 ESLint 的价值不是“替代测试”，而是：
+
+**把大量低层级、机械性、结构性问题提前在编码阶段拦下来。**
+
+## 七、结合你当前项目，ESLint 是怎么工作的
+
+在 `agent-server` 里，当前 ESLint 主要有这几个层次。
+
+### 1. JS/TS 基础推荐规则
+
+来自：
+
+```js
+eslint.configs.recommended
+```
+
+它会检查很多基础问题，例如：
+
+- 未定义变量
+- 某些明显错误模式
+- 可疑语法
+
+### 2. TypeScript 推荐规则
+
+来自：
+
+```js
+...tseslint.configs.recommendedTypeChecked
+```
+
+这代表：
+
+- 不只是支持 TypeScript 语法
+- 还启用了依赖类型信息的推荐规则
+
+所以像你前面遇到的 project service 问题，本质上就是这套“类型感知 lint”链路引出的。
+
+### 3. Prettier 规则接入
+
+来自：
+
+```js
+eslintPluginPrettierRecommended
+```
+
+它会把 Prettier 格式问题也作为 ESLint 结果输出。
+
+所以你执行 `eslint` 时，有时看到的并不是“语义错误”，而只是：
+
+- 结尾缺换行
+- 缩进不一致
+- 排版不符合 Prettier
+
+### 4. 项目自定义规则
+
+你当前还额外加了：
+
+```js
+rules: {
+  '@typescript-eslint/no-explicit-any': 'off',
+  '@typescript-eslint/no-floating-promises': 'warn',
+  '@typescript-eslint/no-unsafe-argument': 'warn'
+}
+```
+
+这表示你们项目额外关心：
+
+- Promise 处理是否规范
+- 参数传递是否不安全
+
+同时对 `any` 较宽松。
+
+### 5. `.mjs` 配置文件走单独规则
+
+你当前又专门给 `.mjs` 做了特殊处理：
+
+```js
+{
+  files: ['**/*.mjs'],
+  extends: [tseslint.configs.disableTypeChecked],
+  ...
+}
+```
+
+这说明你已经在实践一个很重要的原则：
+
+**不同类型的文件，应该走不同强度的 lint 策略。**
+
+业务 TS 源码需要更强的类型检查。  
+工具配置文件只需要更轻、更适配的规则。
+
+## 八、扩展知识与注意点
+
+### 1. ESLint 不是 TypeScript 编译器
+
+虽然它可以利用 TS 类型信息，但它本身不等于 `tsc`。  
+`tsc` 更关注：
+
+- 类型系统是否成立
+- 编译是否能通过
+
+ESLint 更关注：
+
+- 规则是否违反
+- 写法是否规范
+- 是否存在可疑模式
+
+两者有交集，但不是同一件事。
+
+### 2. ESLint 规则很多都带“主观性”
+
+有些规则更接近“团队规范”，并不存在绝对正确答案。  
+例如：
+
+- 是否允许 `any`
+- 是否强制某种 import 排序
+- 是否要求特定风格
+
+所以 ESLint 一部分是在检查“错误”，另一部分是在执行“约定”。
+
+### 3. Type-aware lint 越强，越要注意配置边界
+
+当你启用：
+
+- `projectService: true`
+- `recommendedTypeChecked`
+
+就意味着：
+
+1. 更强的检查能力
+2. 更高的配置复杂度
+3. 对工具文件、配置文件、非 TS 源码更敏感
+
+所以大型项目里常常需要为：
+
+- 源码文件
+- 测试文件
+- 配置文件
+- 脚本文件
+
+分别配置 lint 策略。
+
+### 4. `eslint --fix` 只是“在规则允许下自动修”
+
+它不是 AI，也不是代码重构引擎。  
+它只能对规则明确支持 autofix 的问题做自动修改。
+
+### 5. ESLint 最有价值的时机是“写代码时”和“提交前”
+
+它的最大价值，不是在 CI 最后报你一堆错，而是：
+
+1. 编辑器里实时提示
+2. 提交前通过 `lint-staged` 自动拦住
+3. CI 再做兜底
+
+这样问题会尽量在最早阶段暴露。
+
+## 九、一句话总结
+
+ESLint 检测“代码是否正确”的方式，不是运行代码看结果，而是：
+
+**把代码解析成 AST，再结合作用域分析、规则系统以及可选的 TypeScript 类型信息，对代码结构、语义风险、约定规范和格式问题进行静态检查。**
