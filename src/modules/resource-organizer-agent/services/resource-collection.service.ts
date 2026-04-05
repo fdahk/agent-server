@@ -4,10 +4,13 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import type { Dirent, Stats } from 'node:fs';
 import * as path from 'node:path';
 import { load } from 'cheerio';
+import { AxiosHttpClient } from '../../../shared/clients/axios-http.client';
 import type { CollectedResource } from '../types/types';
 
 @Injectable()
 export class ResourceCollectionService {
+  constructor(private readonly httpClient: AxiosHttpClient) {}
+
   // 仅采集白名单里的文本类资源，避免把二进制文件或超大文件直接喂给后续模型
   private readonly supportedTextExtensions = new Set([
     '.md',
@@ -202,12 +205,10 @@ export class ResourceCollectionService {
       return null;
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.httpTimeoutMs);
-
     try {
-      const response = await fetch(parsed.toString(), {
-        signal: controller.signal,
+      const response = await this.httpClient.get<string>(parsed.toString(), {
+        responseType: 'text',
+        timeout: this.httpTimeoutMs,
         headers: {
           'User-Agent': 'AiAgent Resource Collector/1.0',
         },
@@ -217,7 +218,7 @@ export class ResourceCollectionService {
         return null;
       }
 
-      const html = await response.text();
+      const html = response.data;
       // cheerio 负责把 HTML 解析成可用选择器查询的 DOM 结构
       const $ = load(html);
       // 去掉脚本和样式，只保留更接近正文的可见文本
@@ -248,8 +249,6 @@ export class ResourceCollectionService {
       };
     } catch {
       return null;
-    } finally {
-      clearTimeout(timer);
     }
   }
 

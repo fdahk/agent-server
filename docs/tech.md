@@ -2585,3 +2585,609 @@ ESLint 更关注：
 ESLint 检测“代码是否正确”的方式，不是运行代码看结果，而是：
 
 **把代码解析成 AST，再结合作用域分析、规则系统以及可选的 TypeScript 类型信息，对代码结构、语义风险、约定规范和格式问题进行静态检查。**
+
+---
+
+# JavaScript 原生网络请求接口详解
+
+## 一、先澄清几个容易混淆的概念
+
+在讨论 JS 网络请求时，最容易混淆的是下面三组概念：
+
+1. **网络请求接口 / API**
+2. **HTTP 请求方法**
+3. **REST / RESTful**
+
+它们不是一回事。
+
+### 1. 网络请求接口 / API
+
+这是“你在代码里调用的能力入口”。
+
+例如：
+
+- `fetch()`
+- `XMLHttpRequest`
+- `http.request()`
+- `WebSocket`
+- `EventSource`
+
+这些都可以叫“网络通信接口”或“网络请求 API”。
+
+### 2. HTTP 请求方法
+
+这是 HTTP 协议层面的动作类型。
+
+例如：
+
+- `GET`
+- `POST`
+- `PUT`
+- `PATCH`
+- `DELETE`
+- `HEAD`
+- `OPTIONS`
+
+这些不是 JS 函数，而是 HTTP 报文里的方法字段。
+
+例如：
+
+```ts
+fetch('/api/users', { method: 'GET' })
+```
+
+这里：
+
+- `fetch` 是 JS 提供的网络请求接口
+- `GET` 是 HTTP 请求方法
+
+### 3. REST / RESTful
+
+REST 是一种“接口设计风格”或“架构风格”，不是 JS 内置函数。
+
+例如下面这种接口风格通常被叫 RESTful：
+
+- `GET /users`
+- `GET /users/:id`
+- `POST /users`
+- `PATCH /users/:id`
+- `DELETE /users/:id`
+
+所以：
+
+- `fetch` 不是 RESTful 方法
+- `http.request` 也不是 RESTful 方法
+- 它们只是“发 HTTP 请求的工具”
+- 你既可以用它们请求 RESTful API，也可以请求非 RESTful API
+
+## 二、JS 中常见的原生网络请求接口有哪些
+
+如果从“现代 JavaScript 开发”角度看，原生网络接口主要分为两大运行环境：
+
+1. 浏览器环境
+2. Node.js 环境
+
+## 三、浏览器里的原生网络请求接口
+
+### 1. `fetch()`
+
+这是现代前端最主流的原生 HTTP 请求接口。
+
+特点：
+
+- 基于 Promise
+- 写法简洁
+- 适合请求 REST API、上传 JSON、读取文本/二进制等
+- 浏览器原生支持，现代 Node.js 也支持
+
+示例：
+
+```ts
+const response = await fetch('/api/users', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({ name: 'Tom' }),
+});
+
+const data = await response.json();
+```
+
+#### 它能做什么
+
+- 发 `GET/POST/PUT/PATCH/DELETE` 等 HTTP 请求
+- 发送请求头
+- 发送 JSON / 文本 / `FormData` / 二进制
+- 读取响应头、状态码、响应体
+- 搭配 `AbortController` 取消请求
+
+#### 它的核心对象
+
+- `Request`
+- `Response`
+- `Headers`
+- `AbortController`
+- `AbortSignal`
+
+#### 常见 `fetch` 参数
+
+- `method`：请求方法
+- `headers`：请求头
+- `body`：请求体
+- `signal`：中止信号
+- `mode`：请求模式
+- `credentials`：凭据携带策略
+- `cache`：缓存策略
+- `redirect`：重定向处理策略
+- `referrer`：引用来源
+- `integrity`：完整性校验
+- `keepalive`：页面卸载后保持请求发送
+
+其中日常最常见的是：
+
+- `method`：请求方法
+- `headers`：请求头
+- `body`：请求体
+- `signal`：中止信号
+- `credentials`：凭据携带策略
+
+#### 常见 `Response` 属性 / 方法
+
+- `ok`：是否处于 2xx 成功状态
+- `status`：响应状态码
+- `statusText`：状态描述文本
+- `headers`：响应头集合
+- `url`：最终响应 URL
+- `json()`：按 JSON 解析响应体
+- `text()`：按文本读取响应体
+- `blob()`：按 Blob 二进制对象读取响应体
+- `arrayBuffer()`：按二进制缓冲区读取响应体
+- `formData()`：按表单数据结构读取响应体
+
+### 2. `XMLHttpRequest`
+
+这是更早期的浏览器原生 HTTP 请求接口，简称 `XHR`。
+
+它比 `fetch` 更老，典型写法是：
+
+```ts
+const xhr = new XMLHttpRequest();
+xhr.open('GET', '/api/users');
+xhr.onload = () => {
+  console.log(xhr.responseText);
+};
+xhr.send();
+```
+
+#### 特点
+
+- 老牌浏览器接口
+- 基于事件回调，不是基于 Promise
+- 写法更啰嗦
+- 仍然能用，但现代项目通常更偏向 `fetch`
+
+#### 它现在还有没有价值
+
+有，但场景变少了。
+
+主要在这些场景还可能见到：
+
+- 维护老项目
+- 某些上传进度监听场景
+- 历史封装库底层依赖 XHR
+
+### 3. `WebSocket`
+
+这是浏览器原生的“长连接双向通信”接口。
+
+它不是传统的 HTTP 请求接口，但属于原生网络通信接口。
+
+特点：
+
+- 客户端和服务端都可以主动发消息
+- 适合即时聊天、实时协作、推送、交易行情等
+- 建立连接时会先通过 HTTP Upgrade 升级协议
+
+示例：
+
+```ts
+const ws = new WebSocket('ws://localhost:3000/ws');
+ws.onmessage = (event) => {
+  console.log(event.data);
+};
+ws.send('hello');
+```
+
+### 4. `EventSource`
+
+这是浏览器原生的 SSE（Server-Sent Events）接口。
+
+特点：
+
+- 服务端单向推送到客户端
+- 基于 HTTP
+- 比 WebSocket 更轻量
+- 适合日志流、任务进度、通知流
+
+示例：
+
+```ts
+const source = new EventSource('/api/agent/runs/123/stream');
+source.addEventListener('run_started', (event) => {
+  console.log(event);
+});
+```
+
+你当前项目里的 Agent 进度流就更接近这种模式。
+
+### 5. `navigator.sendBeacon()`
+
+这是浏览器原生的“轻量后台上报”接口。
+
+适合：
+
+- 页面关闭前上报埋点
+- 统计日志
+- 简单监控事件
+
+它不是通用 HTTP 客户端，不适合复杂业务请求。
+
+### 6. `<img>`、`<script>`、`<link>` 等资源加载
+
+严格来说，这些不是“程序员主动调用的请求 API”，但它们底层也会触发网络请求。
+
+例如：
+
+- `<img src="...">`
+- `<script src="...">`
+- `<link href="...">`
+
+这是浏览器自动发起的资源请求机制。
+
+历史上 JSONP 就是利用 `<script>` 标签跨域加载的技巧。
+
+## 四、Node.js 里的原生网络请求接口
+
+Node.js 没有浏览器 DOM，但它也有自己的原生网络通信能力。
+
+### 1. `fetch()`
+
+现代 Node.js 已经内置了标准 `fetch`。
+
+这意味着在新版本 Node 里，你通常可以直接这样写：
+
+```ts
+const response = await fetch('http://localhost:11434/api/chat', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({ foo: 'bar' }),
+});
+```
+
+这也是你当前 `OllamaProvider` 使用的方式。
+
+#### 为什么现在很多 Node 项目也改用 `fetch`
+
+- 语法统一，前后端心智一致
+- 标准化程度高
+- 不必再额外安装老牌 HTTP 请求库才能完成简单调用
+
+### 2. `http.request()`
+
+这是 Node.js 很经典的原生 HTTP 客户端接口，来自：
+
+```ts
+import * as http from 'node:http';
+```
+
+示例：
+
+```ts
+import * as http from 'node:http';
+
+const req = http.request(
+  {
+    hostname: 'example.com',
+    port: 80,
+    path: '/api/users',
+    method: 'GET',
+  },
+  (res) => {
+    let data = '';
+    res.on('data', (chunk) => {
+      data += chunk;
+    });
+    res.on('end', () => {
+      console.log(data);
+    });
+  },
+);
+
+req.on('error', console.error);
+req.end();
+```
+
+#### 它的特点
+
+- 更底层
+- 更接近 Node 流和 socket 模型
+- 代码更啰嗦
+- 需要自己处理 chunk、end、error
+- 更适合需要精细控制的底层场景
+
+#### 它是不是 RESTful 风格请求方法
+
+不是。
+
+它只是一个“发送 HTTP 请求的底层 API”。  
+你当然可以用它去调用 RESTful 接口，但它本身不等于 REST。
+
+### 3. `https.request()`
+
+与 `http.request()` 类似，只不过用于 HTTPS。
+
+来自：
+
+```ts
+import * as https from 'node:https';
+```
+
+如果你需要：
+
+- TLS/HTTPS 请求
+- 证书控制
+- 更底层的安全通信配置
+
+这个 API 仍然有价值。
+
+### 4. `http.get()` / `https.get()`
+
+这是 `request` 的简化封装。
+
+适合简单 GET 请求。
+
+例如：
+
+```ts
+import * as https from 'node:https';
+
+https.get('https://example.com', (res) => {
+  // ...
+});
+```
+
+它本质仍然是底层 HTTP 客户端接口的一种简化调用方式。
+
+### 5. `http2`
+
+Node 还提供 `http2` 模块。
+
+它用于：
+
+- HTTP/2 协议通信
+- 多路复用
+- 头部压缩
+
+这个接口更偏协议级能力，业务项目里不会像 `fetch` 那么常用。
+
+### 6. 更底层的 `net` / `tls` / `dgram`
+
+如果再往下走，就不是“HTTP 请求接口”了，而是更底层的网络接口：
+
+- `net`：TCP
+- `tls`：TLS 加密 TCP
+- `dgram`：UDP
+
+这些都属于 Node 原生网络能力，但它们已经不是“请求 REST API 的接口”，而是更底层的网络编程接口。
+
+## 五、`fetch` 和 `http.request` 都是内置的 RESTful 风格请求方法吗
+
+严格来说，不是。
+
+更准确的说法应该是：
+
+- `fetch` 是 JS/浏览器/现代 Node 提供的原生 HTTP 请求接口
+- `http.request` 是 Node 提供的原生 HTTP 客户端底层接口
+- RESTful 是接口设计风格，不是这两个 API 自身的属性
+
+### 正确理解方式
+
+你可以这样类比：
+
+- `fetch` / `http.request` = 交通工具
+- RESTful API = 你要去的道路规则
+
+交通工具不是“RESTful”，它只是用来访问某个接口。
+
+如果目标接口遵循 REST 设计，你就是在“用 `fetch` 调 RESTful API”。
+如果目标接口不是 REST，而是 RPC 风格、GraphQL、SSE、流式输出、传统表单接口，那你照样也可以用 `fetch` 去访问。
+
+## 六、除了 `fetch` 和 `http.request`，还有哪些“内置请求方法”
+
+这里要分两种理解。
+
+### 1. 如果你问的是“原生网络接口”
+
+常见有：
+
+- 浏览器：`fetch`、`XMLHttpRequest`、`WebSocket`、`EventSource`、`navigator.sendBeacon`
+- Node：`fetch`、`http.request`、`https.request`、`http.get`、`https.get`、`http2`
+
+### 2. 如果你问的是“HTTP 请求方法”
+
+常见内置的协议方法有：
+
+- `GET`
+- `POST`
+- `PUT`
+- `PATCH`
+- `DELETE`
+- `HEAD`
+- `OPTIONS`
+
+这些不是 JS API，而是 HTTP 协议标准的一部分。
+
+## 七、这些接口本质上在做什么
+
+它们本质上都在做一件事：
+
+> 按某种网络协议，把本地程序的数据发送给远端，再把远端响应读回来。
+
+如果是 HTTP 系列接口，大体流程可以理解成：
+
+1. 构造 URL、方法、请求头、请求体
+2. 建立连接
+3. 把请求报文发给服务端
+4. 服务端处理后返回响应报文
+5. 客户端读取状态码、响应头、响应体
+6. 把原始字节流转换成 JSON / 文本 / 二进制数据
+
+`fetch` 和 `http.request` 的区别，不在于“能不能发 HTTP 请求”，而在于：
+
+- 抽象层级不同
+- 易用性不同
+- 对流、超时、重试、连接控制的掌控粒度不同
+
+## 八、`fetch` 和 `http.request` 的底层区别
+
+### `fetch`
+
+更高层、更现代。
+
+特点：
+
+- Promise 风格
+- API 更统一
+- 与浏览器语义一致
+- 更适合大多数业务请求
+
+开发者通常更关注：
+
+- 发什么 URL
+- 用什么 method
+- body 是什么
+- 怎么解析 response
+
+### `http.request`
+
+更底层、更 Node 风格。
+
+特点：
+
+- 面向流和事件
+- 更接近 socket / 协议层
+- 需要自己处理数据块拼接
+- 适合细粒度控制
+
+开发者通常还要额外处理：
+
+- `data` 事件
+- `end` 事件
+- `error` 事件
+- `req.end()`
+
+## 九、业界常用的请求方式是原生能力还是第三方工具
+
+答案是：
+
+> 两者都很多，但趋势正在变化。
+
+## 十、前端业界常见做法
+
+### 1. 现代前端项目
+
+现在越来越多项目直接使用原生 `fetch`。
+
+原因：
+
+- 浏览器原生支持
+- 标准化
+- 无额外依赖
+- 搭配封装后已经足够实用
+
+很多团队会在 `fetch` 外层自己封一个轻量请求器，例如统一处理：
+
+- base URL
+- token 注入
+- 超时
+- 错误码处理
+- 自动解析 JSON
+
+### 2. 为什么很多前端项目仍然使用 `axios`
+
+`axios` 很长时间都是前端最流行的 HTTP 库之一。
+
+它流行的原因包括：
+
+- API 友好
+- 请求/响应拦截器好用
+- 自动 JSON 处理体验较好
+- 历史兼容性强
+- 团队积累多
+
+所以当前业界并不是“全部切到原生 `fetch`”。
+
+更真实的情况是：
+
+- 新项目：很多直接 `fetch`
+- 中大型前端：`fetch` 或 `axios` 都很常见
+- 老项目：`axios` 仍然大量存在
+
+## 十一、Node.js 后端业界常见做法
+
+### 1. 过去
+
+Node 里曾经大量使用第三方 HTTP 客户端，例如：
+
+- `axios`
+- `request`（已废弃）
+- `superagent`
+- `got`
+- `node-fetch`
+
+### 2. 现在
+
+现在现代 Node 项目越来越常见的选择是：
+
+- 简单请求：原生 `fetch`
+- 复杂请求：`axios`、`got` 或更专业的封装
+
+### 3. 为什么后端有时仍偏爱第三方工具
+
+因为很多后端场景需要更完整的工程能力，例如：
+
+- 超时控制
+- 自动重试
+- 代理
+- 连接池
+- 拦截器
+- 更细的流处理
+- 更完善的错误对象
+- 更方便的上传下载能力
+
+原生能力能做，但第三方库往往“开箱更顺手”。
+
+## 十二、常见第三方请求工具有哪些
+
+### 浏览器 / 通用 TS 项目
+
+- `axios`
+- `ky`
+- `superagent`
+
+### Node.js 后端
+
+- `axios`
+- `got`
+- `superagent`
+- `undici`
+
+### 特别说明：`undici`
+
+`undici` 是 Node 官方生态里非常重要的 HTTP 客户端实现。  
+现代 Node 的原生 `fetch` 能力本身就与它关系很深。
+
+所以很多时候你以为自己“只是用原生 fetch”，底层实现其实已经和现代 Node HTTP 客户端生态紧密相关。

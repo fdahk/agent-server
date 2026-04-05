@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AgentController } from './controller';
+import { AxiosHttpClient } from '../../shared/clients/axios-http.client';
 import { AgentReportService } from './services/report.service';
 import { AgentRunStoreService } from './services/run-store.service';
 import { AgentService } from './service';
@@ -11,6 +12,7 @@ import { ResourceCollectionService } from './services/resource-collection.servic
 @Module({
   controllers: [AgentController],
   providers: [
+    AxiosHttpClient,
     AgentService,
     AgentRunStoreService,
     OllamaProvider,

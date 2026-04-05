@@ -1,4 +1,5 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { AxiosHttpClient } from '../../../shared/clients/axios-http.client';
 
 type OllamaMessage = {
   role: 'system' | 'user' | 'assistant';
@@ -13,6 +14,9 @@ type OllamaChatResponse = {
 
 @Injectable()
 export class OllamaProvider {
+  // 作为 Nest Provider 承载模型服务配置与调用封装，供模块内其他服务通过依赖注入复用
+  constructor(private readonly httpClient: AxiosHttpClient) {}
+
   private readonly baseUrl =
     process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
   private readonly defaultModel = process.env.OLLAMA_MODEL ?? 'qwen2.5:7b';
@@ -70,27 +74,25 @@ export class OllamaProvider {
     model?: string;
     temperature: number;
   }): Promise<OllamaChatResponse> {
-    // fetch 自身没有内建超时，这里用 AbortController + setTimeout 手动实现
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-
     try {
-      const response = await fetch(`${this.baseUrl}/api/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      const response = await this.httpClient.post<OllamaChatResponse>(
+        `${this.baseUrl}/api/chat`,
+        {
           model: this.resolveModel(params.model),
-          // 这里关闭 Ollama 自身流式输出，当前项目统一由后端自己的 SSE 往前端推业务事件
+          // 关闭 Ollama 自身流式输出，当前项目统一由后端自己的 SSE 往前端推业务事件
           stream: false,
           messages: params.messages,
           options: {
             temperature: params.temperature,
           },
-        }),
-        signal: controller.signal,
-      });
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          timeout: this.timeoutMs,
+        },
+      );
 
       if (!response.ok) {
         throw new ServiceUnavailableException(
@@ -98,25 +100,26 @@ export class OllamaProvider {
         );
       }
 
-      return (await response.json()) as OllamaChatResponse;
+      return response.data;
     } catch (error) {
       throw new ServiceUnavailableException(
         error instanceof Error
           ? `无法调用 Ollama：${error.message}`
           : '无法调用 Ollama 服务',
       );
-    } finally {
-      clearTimeout(timer);
     }
   }
 
+  // 从文本中提取 JSON 片段
   private extractJson(text: string): string {
+    // 匹配 ```json 和 ``` 之间的内容，[\s\S]*? 表示匹配任意字符，包括换行符
     const fencedMatch = text.match(/```json\s*([\s\S]*?)```/i);
 
     if (fencedMatch?.[1]) {
       return fencedMatch[1].trim();
     }
 
+    // 从文本中提取 JSON 片段的兜底策略：从第一个 { 或 [ 开始截取，兼容模型前面多说了几句说明文字
     const firstBrace = text.indexOf('{');
     const firstBracket = text.indexOf('[');
     const start =
@@ -130,7 +133,6 @@ export class OllamaProvider {
       throw new ServiceUnavailableException('Ollama 没有返回可解析的 JSON');
     }
 
-    // 兜底策略：从第一个 { 或 [ 开始截取，兼容模型前面多说了几句说明文字
     return text.slice(start).trim();
   }
 }
