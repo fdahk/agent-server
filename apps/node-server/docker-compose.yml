@@ -1,9 +1,0 @@
-services:
-  node-server:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - '3101:3101'
-    env_file:
-      - .env

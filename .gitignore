@@ -4,6 +4,7 @@ Thumbs.db
 *.log
 *.local
 .env
+.env.docker
 .cursor/
 
 # === Node (apps/node-server) ===

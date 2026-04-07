@@ -1,0 +1,14 @@
+target
+.git
+.github
+.idea
+.settings
+.classpath
+.project
+*.iml
+.localdb
+storage
+.cursor
+*.local
+.env
+docs
