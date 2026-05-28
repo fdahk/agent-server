@@ -1,7 +1,6 @@
 import swc from 'unplugin-swc';
 import { defineConfig } from 'vitest/config';
 
-// Vitest 选型理由见 docs/项目重构方案/08-测试策略与工程化.md §2:
 // 相比 Jest,Vitest 更快(esbuild/swc)、原生 ESM/TS、V8 覆盖率。
 // NestJS 的装饰器与 metadata 由 unplugin-swc 处理(读取 .swcrc)。
 export default defineConfig({
@@ -11,7 +10,7 @@ export default defineConfig({
   ],
   test: {
     // 不开 globals:测试文件显式 import { describe, it, expect } from 'vitest'
-    // (避免污染主 tsconfig 的 types,且更显式,见 08 §10 示例)
+    // (避免污染主 tsconfig 的 types,且更显式)
     environment: 'node',
     root: './',
     include: ['src/**/*.spec.ts', 'test/**/*.test.ts'],
@@ -29,7 +28,6 @@ export default defineConfig({
         'src/**/dto/**',
         'src/**/*.dto.ts',
       ],
-      // 覆盖率阈值待 M1 真实业务逻辑落地后开启(M0 多为脚手架,强行设阈值会卡在 boilerplate)
       // thresholds: { lines: 80, functions: 80, branches: 80 },
     },
   },

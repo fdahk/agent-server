@@ -7,6 +7,7 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { setupSwagger } from './swagger';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -16,6 +17,9 @@ async function bootstrap() {
 
   // 全局路由前缀 'api',所有控制器路由自动加 /api
   app.setGlobalPrefix('api');
+
+  // 接口文档:/docs(UI),/docs-json(OpenAPI JSON)
+  setupSwagger(app);
 
   await app.listen(process.env.PORT ?? 3101);
 }
