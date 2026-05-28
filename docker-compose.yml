@@ -4,37 +4,16 @@
 #   3. docker compose --env-file .env.docker logs -f     # 查看日志
 #   4. docker compose --env-file .env.docker down         # 停止并移除
 #
-# 服务清单：
-#   mysql        → 3306   关系型数据库
-#   redis        → 6379   缓存
-#   rabbitmq     → 5672（AMQP）/ 15672（管理面板）
-#   node-server  → 3101   Node AI Gateway
-#   java-server  → 3000   Java Core（对外 API 入口）
+# 服务清单（M0 起,单 Node 服务架构,详见 docs/项目重构方案/02 §6）：
+#   redis        → 6379   BullMQ 队列 + Pub/Sub backplane + 缓存
+#   node-server  → 3101   单 Node 服务（NestJS,后续按 web/worker 角色拆分扩容）
 #
-# Ollama 需要 GPU 直接跑在宿主机上，容器内通过 host.docker.internal 访问。
+# Postgres / Qdrant 等基础设施将在后续 commit 加入(M0 commit 4)。
+# Ollama 跑在宿主机上(本地开发),容器内通过 host.docker.internal 访问。
 # ==========================================================================
 
 services:
   # ==================== 基础设施 ====================
-
-  mysql:
-    image: mysql:8.0
-    container_name: agent-mysql
-    restart: unless-stopped
-    ports:
-      - "${MYSQL_PORT:-3306}:3306"
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-agent_server}
-      MYSQL_CHARACTER_SET_SERVER: utf8mb4
-      MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
-    volumes:
-      - mysql-data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
 
   redis:
     image: redis:7-alpine
@@ -53,24 +32,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  rabbitmq:
-    image: rabbitmq:3-management-alpine
-    container_name: agent-rabbitmq
-    restart: unless-stopped
-    ports:
-      - "${RABBITMQ_PORT:-5672}:5672"
-      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
-    volumes:
-      - rabbitmq-data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
 
   # ==================== 应用服务 ====================
 
@@ -106,62 +67,10 @@ services:
       start_period: 10s
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-  java-server:
-    build:
-      context: ./apps/java-server
-      dockerfile: Dockerfile
-    container_name: agent-java-server
-    restart: unless-stopped
-    ports:
-      - "${JAVA_PORT:-3000}:3000"
-    environment:
-      PORT: 3000
-      # MySQL
-      MYSQL_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-agent_server}?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
-      MYSQL_USERNAME: root
-      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
-      # Redis
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
-      REDIS_DATABASE: 0
-      # RabbitMQ
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-guest}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
-      # Security
-      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-long-dev-secret-key-change-me}
-      JWT_EXPIRE_SECONDS: ${JWT_EXPIRE_SECONDS:-7200}
-      # AI Gateway（容器间通信用 Docker 服务名）
-      AI_DEFAULT_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
-      AI_GATEWAY_BASE_URL: http://node-server:3101
-      AI_GATEWAY_TIMEOUT_MS: ${AI_GATEWAY_TIMEOUT_MS:-120000}
-      AI_GATEWAY_API_KEY: ${INTERNAL_TOKEN:-change-me-to-a-secure-token}
-      # Agent
-      AGENT_OUTPUT_ROOT: /app/storage/agent-runs
-    volumes:
-      - java-storage:/app/storage
     depends_on:
-      mysql:
-        condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-      node-server:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/actuator/health || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
 
 volumes:
-  mysql-data:
   redis-data:
-  rabbitmq-data:
   node-storage:
-  java-storage:
