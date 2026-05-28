@@ -10,8 +10,16 @@ import { RedisModule } from './shared/redis/redis.module';
 import { QdrantModule } from './shared/qdrant/qdrant.module';
 import { LlmModule } from './shared/llm/llm.module';
 import { HealthModule } from './modules/health/health.module';
+import { AuthModule } from './modules/auth/auth.module';
 
 @Module({
-  imports: [PrismaModule, RedisModule, QdrantModule, LlmModule, HealthModule],
+  imports: [
+    PrismaModule,
+    RedisModule,
+    QdrantModule,
+    LlmModule,
+    AuthModule,
+    HealthModule,
+  ],
 })
 export class AppModule {}

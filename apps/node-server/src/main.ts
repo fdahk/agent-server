@@ -6,6 +6,7 @@
  */
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { setupSwagger } from './swagger';
 
@@ -14,6 +15,15 @@ async function bootstrap() {
 
   // 允许跨域访问,生产应收敛 origin 白名单
   app.enableCors({ origin: true });
+
+  // 全局校验管道:DTO 装饰器(class-validator)生效;whitelist 丢弃未声明字段
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+      forbidNonWhitelisted: false,
+    }),
+  );
 
   // 全局路由前缀 'api',所有控制器路由自动加 /api
   app.setGlobalPrefix('api');

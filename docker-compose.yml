@@ -88,8 +88,9 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-ollama}
       LLM_CHAT_MODEL: ${LLM_CHAT_MODEL:-qwen2.5:7b}
       LLM_EMBED_MODEL: ${LLM_EMBED_MODEL:-nomic-embed-text}
-      # 旧内部令牌,node-server 现有 guard 仍引用,待重构清理
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-change-me-to-a-secure-token}
+      # 鉴权
+      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-long-random-secret-in-production}
+      JWT_EXPIRE_SECONDS: ${JWT_EXPIRE_SECONDS:-7200}
       AGENT_OUTPUT_ROOT: /app/storage/agent-runs
       AGENT_MAX_FILES: ${AGENT_MAX_FILES:-12}
       AGENT_MAX_FILE_SIZE: ${AGENT_MAX_FILE_SIZE:-262144}
