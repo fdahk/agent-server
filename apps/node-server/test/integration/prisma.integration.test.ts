@@ -41,7 +41,12 @@ describe('Prisma 数据模型(集成)', () => {
   it('迁移后能创建并查回 user', async () => {
     const username = `alice-${Date.now()}`;
     const u = await prisma.user.create({
-      data: { username, passwordHash: 'x', displayName: 'Alice', roleCode: 'USER' },
+      data: {
+        username,
+        passwordHash: 'x',
+        displayName: 'Alice',
+        roleCode: 'USER',
+      },
     });
     const got = await prisma.user.findUnique({ where: { id: u.id } });
     expect(got?.username).toBe(username);
@@ -82,7 +87,13 @@ describe('Prisma 数据模型(集成)', () => {
     });
     const runId = `run-${Date.now()}`;
     await prisma.run.create({
-      data: { runId, userId: u.id, kind: 'ingestion', task: 't', status: 'queued' },
+      data: {
+        runId,
+        userId: u.id,
+        kind: 'ingestion',
+        task: 't',
+        status: 'queued',
+      },
     });
     await prisma.runEvent.create({
       data: { runId, sequenceNo: 1, eventType: 'start', payload: {} },
