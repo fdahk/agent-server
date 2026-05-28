@@ -1,17 +1,17 @@
 /**
  * 应用根模块(Root Module)
  *
- * 单 Node 服务的根模块。后续各功能模块(auth/documents/chat/agent)与基础设施
- * 模块(prisma/redis/qdrant/llm 等)将随里程碑逐步在此 imports 注册。
- * 目前仅保留根级 AppController(健康检查)与 AppService。
+ * 接入基础设施模块(全部 @Global())+ 健康检查 controller。
+ * 各功能模块(auth/documents/chat/agent)就绪后在 imports 追加。
  */
 import { Module } from '@nestjs/common';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
+import { PrismaModule } from './shared/prisma/prisma.module';
+import { RedisModule } from './shared/redis/redis.module';
+import { QdrantModule } from './shared/qdrant/qdrant.module';
+import { LlmModule } from './shared/llm/llm.module';
+import { HealthModule } from './modules/health/health.module';
 
 @Module({
-  imports: [],
-  controllers: [AppController],
-  providers: [AppService],
+  imports: [PrismaModule, RedisModule, QdrantModule, LlmModule, HealthModule],
 })
 export class AppModule {}
