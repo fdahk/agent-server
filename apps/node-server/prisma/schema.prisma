@@ -1,0 +1,135 @@
+// 数据模型(关系层在 Postgres,向量在 Qdrant)。
+// 主键用 Int(避免 BigInt 在 Node 的 JSON 序列化坑);JSON 列用原生 jsonb。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ 用户 ============
+model User {
+  id           Int      @id @default(autoincrement())
+  username     String   @unique @db.VarChar(64)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  displayName  String   @map("display_name") @db.VarChar(128)
+  roleCode     String   @map("role_code") @db.VarChar(32)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  documents     Document[]
+  conversations Conversation[]
+  runs          Run[]
+
+  @@map("users")
+}
+
+// ============ 文档(用户上传的资料)============
+model Document {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  filename    String   @db.VarChar(255)
+  mimeType    String   @map("mime_type") @db.VarChar(128)
+  sizeBytes   Int      @map("size_bytes")
+  storagePath String   @map("storage_path") @db.VarChar(512)
+  // uploaded → parsing → chunking → embedding → ready → failed
+  status      String   @db.VarChar(32)
+  errorMsg    String?  @map("error_msg") @db.Text
+  chunkCount  Int      @default(0) @map("chunk_count")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user   User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chunks DocumentChunk[]
+
+  @@index([userId, createdAt])
+  @@map("documents")
+}
+
+// ============ 文档分片(向量存 Qdrant,这里存元数据)============
+model DocumentChunk {
+  id            Int      @id @default(autoincrement())
+  documentId    Int      @map("document_id")
+  userId        Int      @map("user_id") // 冗余,便于按用户过滤/级联
+  chunkIndex    Int      @map("chunk_index")
+  content       String   @db.Text // 原文(拼上下文 + 展示引用)
+  tokenCount    Int      @map("token_count")
+  qdrantPointId String   @map("qdrant_point_id") @db.VarChar(64)
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, chunkIndex])
+  @@index([userId])
+  @@map("document_chunks")
+}
+
+// ============ 会话 ============
+model Conversation {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  title     String   @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@index([userId, createdAt])
+  @@map("conversations")
+}
+
+// ============ 消息(多轮对话历史)============
+model Message {
+  id             Int      @id @default(autoincrement())
+  conversationId Int      @map("conversation_id")
+  role           String   @db.VarChar(16) // user / assistant / system
+  content        String   @db.Text
+  citations      Json? // [{ chunkId, documentId, score }],该回答引用了哪些 chunk
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+// ============ 运行(泛化:摄取作业 + agent 任务共用)============
+model Run {
+  id          Int       @id @default(autoincrement())
+  runId       String    @unique @map("run_id") @db.VarChar(64)
+  userId      Int       @map("user_id")
+  kind        String    @db.VarChar(32) // ingestion / agent_task
+  refId       String?   @map("ref_id") @db.VarChar(64) // 关联的 documentId / conversationId
+  task        String    @db.VarChar(255)
+  status      String    @db.VarChar(32) // queued / running / completed / failed
+  progressMsg String?   @map("progress_msg") @db.VarChar(255)
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  user   User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  events RunEvent[]
+
+  @@index([userId, createdAt])
+  @@map("runs")
+}
+
+// ============ 运行事件(事件溯源)============
+model RunEvent {
+  id         Int      @id @default(autoincrement())
+  runId      String   @map("run_id") @db.VarChar(64)
+  sequenceNo Int      @map("sequence_no")
+  eventType  String   @map("event_type") @db.VarChar(64)
+  payload    Json
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  run Run @relation(fields: [runId], references: [runId], onDelete: Cascade)
+
+  @@unique([runId, sequenceNo])
+  @@index([runId])
+  @@map("run_events")
+}

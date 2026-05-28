@@ -1,0 +1,4 @@
+# 该文件被 Prisma Migrate 用来锁定迁移的目标数据库
+# 详见 https://pris.ly/d/migrate-lock
+
+provider = "postgresql"
