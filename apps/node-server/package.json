@@ -28,6 +28,7 @@
     "@nestjs/core": "^11.1.18",
     "@nestjs/platform-express": "^11.1.18",
     "@prisma/client": "^6.19.3",
+    "@qdrant/js-client-rest": "^1.18.0",
     "axios": "^1.14.0",
     "cheerio": "^1.2.0",
     "ioredis": "^5.11.0",
