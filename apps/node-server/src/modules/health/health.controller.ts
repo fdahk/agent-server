@@ -2,6 +2,7 @@ import { Controller, Get } from '@nestjs/common';
 import { PrismaService } from '../../shared/prisma/prisma.service';
 import { RedisService } from '../../shared/redis/redis.service';
 import { QdrantService } from '../../shared/qdrant/qdrant.service';
+import { Public } from '../auth/public.decorator';
 
 interface ComponentHealth {
   status: 'up' | 'down';
@@ -24,6 +25,7 @@ interface HealthResponse {
  * 整体 status = degraded,但仍 200 返回 details 供外部判断。
  * LLM 不纳入(外部服务、按需调用、健康检查里 ping 会浪费 token)。
  */
+@Public()
 @Controller('health')
 export class HealthController {
   constructor(

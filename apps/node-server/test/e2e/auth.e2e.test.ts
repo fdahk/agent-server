@@ -153,4 +153,36 @@ describe('/api/auth', () => {
       .send({ username: 'shortpw', password: 'short', displayName: 'X' });
     expect(res.status).toBe(400);
   });
+
+  it('GET /api/auth/me 无 token → 401(全局守卫拦截)', async () => {
+    const server = app.getHttpServer() as Parameters<typeof request>[0];
+    const res = await request(server).get('/api/auth/me');
+    expect(res.status).toBe(401);
+  });
+
+  it('GET /api/auth/me 带合法 token → 200 + 当前用户', async () => {
+    const server = app.getHttpServer() as Parameters<typeof request>[0];
+    const login = await request(server)
+      .post('/api/auth/login')
+      .send({ username, password });
+    const token = (login.body as AuthBody).token!;
+
+    const res = await request(server)
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${token}`);
+    // /me 直接返回 user 对象
+    const body = res.body as NonNullable<AuthBody['user']>;
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ username, roleCode: 'USER' });
+    expect(body.passwordHash).toBeUndefined();
+  });
+
+  it('GET /api/auth/me 伪造 token → 401', async () => {
+    const server = app.getHttpServer() as Parameters<typeof request>[0];
+    const res = await request(server)
+      .get('/api/auth/me')
+      .set('Authorization', 'Bearer not.a.realtoken');
+    expect(res.status).toBe(401);
+  });
 });

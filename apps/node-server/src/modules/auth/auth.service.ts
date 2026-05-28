@@ -66,6 +66,23 @@ export class AuthService {
     return this.buildResponse(user);
   }
 
+  /** 受保护端点用:按 userId 取当前用户档案(不含 passwordHash) */
+  async getProfile(userId: number): Promise<AuthUserDto> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new UnauthorizedException({
+        code: 'USER_NOT_FOUND',
+        message: '用户不存在',
+      });
+    }
+    return {
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      roleCode: user.roleCode,
+    };
+  }
+
   private async buildResponse(user: {
     id: number;
     username: string;
