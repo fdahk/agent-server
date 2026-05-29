@@ -9,6 +9,7 @@ import { PrismaModule } from './shared/prisma/prisma.module';
 import { RedisModule } from './shared/redis/redis.module';
 import { QdrantModule } from './shared/qdrant/qdrant.module';
 import { LlmModule } from './shared/llm/llm.module';
+import { RunEngineModule } from './shared/run-engine/run-engine.module';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 
@@ -18,6 +19,7 @@ import { AuthModule } from './modules/auth/auth.module';
     RedisModule,
     QdrantModule,
     LlmModule,
+    RunEngineModule,
     AuthModule,
     HealthModule,
   ],
