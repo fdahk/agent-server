@@ -36,14 +36,22 @@ export class RunEngineService {
     });
   }
 
+  /** 开始:先发 run_started 事件,再落 running 状态(与 fail 对称) */
   async start(runId: string, progressMsg?: string): Promise<void> {
+    await this.emit(runId, 'run_started', {});
     await this.prisma.run.update({
       where: { runId },
       data: { status: 'running', startedAt: new Date(), progressMsg },
     });
   }
 
+  /**
+   * 完成:先发 run_completed 事件,再落 completed 状态。
+   * 顺序很关键——若先落终态再发事件,晚连入的 SSE 可能读到 completed 却还没看到
+   * run_completed 而提前收尾,漏掉终态事件;先发事件可保证终态事件总能被回放到。
+   */
   async complete(runId: string, progressMsg?: string): Promise<void> {
+    await this.emit(runId, 'run_completed', progressMsg ? { progressMsg } : {});
     await this.prisma.run.update({
       where: { runId },
       data: { status: 'completed', completedAt: new Date(), progressMsg },
@@ -84,6 +92,11 @@ export class RunEngineService {
     });
     await this.redis.client.publish(runChannel(runId), JSON.stringify(event));
     return event;
+  }
+
+  /** 取单个 run(SSE 接入时校验存在性与归属) */
+  async getRun(runId: string): Promise<Run | null> {
+    return this.prisma.run.findUnique({ where: { runId } });
   }
 
   /** 运行快照:断线重连时一次性拿全量状态 + 已发生事件 */
