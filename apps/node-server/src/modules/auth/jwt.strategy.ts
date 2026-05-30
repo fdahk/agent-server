@@ -20,7 +20,13 @@ export interface AuthedUser {
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor() {
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      // 优先取 Authorization: Bearer;再兜底 ?access_token= 查询参数。
+      // 原生 EventSource 无法设置自定义请求头,SSE 只能把 token 放 query,
+      // 这是 SSE 鉴权的通行做法;代价是 token 可能进访问日志,故仅作兜底。
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        ExtractJwt.fromUrlQueryParameter('access_token'),
+      ]),
       ignoreExpiration: false,
       secretOrKey:
         process.env.JWT_SECRET ?? 'dev-secret-change-me-in-production',

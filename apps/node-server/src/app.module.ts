@@ -10,8 +10,10 @@ import { RedisModule } from './shared/redis/redis.module';
 import { QdrantModule } from './shared/qdrant/qdrant.module';
 import { LlmModule } from './shared/llm/llm.module';
 import { RunEngineModule } from './shared/run-engine/run-engine.module';
+import { QueueModule } from './shared/queue/queue.module';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { RunsModule } from './modules/runs/runs.module';
 
 @Module({
   imports: [
@@ -20,8 +22,10 @@ import { AuthModule } from './modules/auth/auth.module';
     QdrantModule,
     LlmModule,
     RunEngineModule,
+    QueueModule,
     AuthModule,
     HealthModule,
+    RunsModule,
   ],
 })
 export class AppModule {}
