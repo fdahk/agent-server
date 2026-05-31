@@ -14,6 +14,10 @@ export default defineConfig({
     environment: 'node',
     root: './',
     include: ['src/**/*.spec.ts', 'test/**/*.test.ts'],
+    // 每个测试文件用独立子进程跑完即回收;集成测试每个文件都起 testcontainers 容器,
+    // 限并发为 2 既防同时拉起过多容器把 Docker 压垮,又避免单进程累积内存 OOM。
+    pool: 'forks',
+    poolOptions: { forks: { maxForks: 2, minForks: 1 } },
     // testcontainers 启动容器较慢,给足超时
     testTimeout: 60_000,
     hookTimeout: 60_000,
