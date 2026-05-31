@@ -14,6 +14,7 @@ import { QueueModule } from './shared/queue/queue.module';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { RunsModule } from './modules/runs/runs.module';
+import { DocumentsModule } from './modules/documents/documents.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { RunsModule } from './modules/runs/runs.module';
     AuthModule,
     HealthModule,
     RunsModule,
+    DocumentsModule,
   ],
 })
 export class AppModule {}
