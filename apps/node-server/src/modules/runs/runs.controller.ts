@@ -34,7 +34,7 @@ export class RunsController {
     private readonly redis: RedisService,
   ) {}
 
-  /** 造一个假 job 入队,worker 异步消费;立即返回 runId 供前端订阅进度(M2 验收用) */
+  /** 造一个假 job 入队,worker 异步消费;立即返回 runId 供前端订阅进度 */
   @Post('demo')
   @HttpCode(202)
   @ApiOperation({ summary: '入队一个演示作业,返回 runId' })
