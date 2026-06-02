@@ -36,6 +36,22 @@ export class LlmService {
     return resp.choices[0]?.message?.content ?? '';
   }
 
+  /**
+   * 流式 chat:逐 token 产出 delta.content,供 RAG 对话边生成边经 SSE 推前端。
+   * 调用方用 `for await (const token of llm.chatStream(msgs))` 消费。
+   */
+  async *chatStream(messages: ChatMessage[]): AsyncIterable<string> {
+    const stream = await this.client.chat.completions.create({
+      model: this.chatModel,
+      messages,
+      stream: true,
+    });
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta?.content;
+      if (delta) yield delta;
+    }
+  }
+
   /** 批量 embedding。单 string 自动包成 [string] */
   async embed(input: string | string[]): Promise<number[][]> {
     const batch = Array.isArray(input) ? input : [input];
