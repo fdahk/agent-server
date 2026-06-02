@@ -3,8 +3,9 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
+
+import { InjectQueue } from '@nestjs/bullmq'; // InjectQueue 是个参数装饰器,用它能在构造函数里拿到 BullMQ 的 Queue 实例
+import { Queue } from 'bullmq'; // Queue 是 BullMQ 里表示一个队列的类,它有 add() 方法能往队列里添加任务
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
@@ -60,6 +61,7 @@ export class DocumentsService {
     );
     await writeFile(storagePath, file.buffer);
 
+    // 入库时状态先标 queued,等 worker 进程摄取完成后改成 processed/failed;这样用户查文档状态时就能知道是否摄取完成了
     const doc = await this.prisma.document.create({
       data: {
         userId: user.userId,

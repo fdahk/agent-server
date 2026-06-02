@@ -1,5 +1,6 @@
 import { IsString, MaxLength, Matches, MinLength } from 'class-validator';
 
+// register.dto.ts —— 注册请求体(比登录多了正则、密码强度等约束)
 export class RegisterDto {
   /** 用户名:3-64 字符,允许字母、数字、下划线、连字符 */
   @IsString()
@@ -10,7 +11,7 @@ export class RegisterDto {
   })
   username!: string;
 
-  /** 密码:至少 8 字符;hash 用 bcrypt 落库,明文绝不存 */
+  /** 密码:至少 8 字符;hash 用 bcrypt 落库 */
   @IsString()
   @MinLength(8)
   @MaxLength(128)

@@ -4,12 +4,14 @@ import { readFile } from 'node:fs/promises';
 import type { Run } from '@prisma/client';
 import { PrismaService } from '../../shared/prisma/prisma.service';
 import { LlmService } from '../../shared/llm/llm.service';
+// QdrantService 提供 upsertChunks() 方法,能把切分好的文本块和它们的向量一起写到 Qdrant 里
 import {
   QdrantService,
   type ChunkPoint,
 } from '../../shared/qdrant/qdrant.service';
 import { RunEngineService } from '../../shared/run-engine/run-engine.service';
 import { parseToText } from './document-parser';
+// 文本切分和 token 估算函数
 import { splitText, estimateTokens } from './text-splitter';
 
 const CHUNK_SIZE = 800;
@@ -44,6 +46,7 @@ export class IngestionService {
     }
 
     try {
+      // 开始摄取:先把文档状态改成 processing,这样用户查文档状态时就能知道正在摄取了
       await this.prisma.document.update({
         where: { id: documentId },
         data: { status: 'processing', errorMsg: null },
@@ -64,18 +67,24 @@ export class IngestionService {
 
       // 重试幂等:开写前清掉本文档可能残留的两边旧数据
       await this.qdrant.deleteByDocument(documentId);
+      // prisma.documentChunk.deleteMany() 没有 where { documentId }
+      // 这样的批量删除接口,只能先查 chunkId 列表再逐条删;但性能还行,每次摄取的 chunk 数量级在几百以下
       await this.prisma.documentChunk.deleteMany({ where: { documentId } });
 
       let written = 0;
       for (let start = 0; start < chunks.length; start += EMBED_BATCH) {
         const batch = chunks.slice(start, start + EMBED_BATCH);
         const vectors = await this.llm.embed(batch);
+        // points 是要写到 Qdrant 的数据结构:每个 chunk 对应一个 point,
+        // 包含 id/vector/payload 三部分;payload 里带上 documentId 和 chunkId 以便后续搜索时能知道这个向量对应哪个文档的哪个 chunk
         const points: ChunkPoint[] = [];
 
         for (let j = 0; j < batch.length; j++) {
           const chunkIndex = start + j;
           const content = batch[j];
           const pointId = randomUUID();
+          // 把这个 chunk 写到 Postgres 里,拿到 chunkId 后再写 Qdrant;
+          // 如果写 Qdrant 失败了,这个 chunk 就算没写成功,下次重试时还会再写一次
           const chunk = await this.prisma.documentChunk.create({
             data: {
               documentId,
@@ -86,6 +95,8 @@ export class IngestionService {
               qdrantPointId: pointId,
             },
           });
+          // points.push() 用于把这个 chunk 对应的向量和它的 metadata 一起收集到 points 数组里
+          // 等这个 batch 的所有 chunk 都处理完了再批量写到 Qdrant
           points.push({
             id: pointId,
             vector: vectors[j],

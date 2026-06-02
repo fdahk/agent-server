@@ -1,3 +1,4 @@
+// auth-response.dto.ts —— 登录/注册的响应体(token + 用户信息)
 export class AuthUserDto {
   id!: number;
   username!: string;

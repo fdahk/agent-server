@@ -1,7 +1,9 @@
+// 这个模块负责把上传的文档解析成纯文本。支持 pdf/docx/md/txt 四种格式,其他格式直接拒绝。
 import { PDFParse } from 'pdf-parse';
+// mammoth 是个专门解析 docx 的库,它的 extractRawText() 方法能把 docx 里的文本提取出来,丢掉格式和图片等非文本内容。
 import * as mammoth from 'mammoth';
 
-/** 允许的上传类型:扩展名 → 是否受支持。校验与解析都以此为准 */
+/** 允许的上传类型:扩展名 → 是否受支持 */
 const SUPPORTED_EXTENSIONS = new Set(['pdf', 'docx', 'md', 'markdown', 'txt']);
 
 /** 单文件大小上限,既用于 multer limits 也用于业务层兜底校验 */
@@ -32,6 +34,7 @@ export async function parseToText(
         const { text } = await parser.getText();
         return text;
       } finally {
+        // 实例在解析过程中会占用一些资源(如文件句柄)
         await parser.destroy();
       }
     }

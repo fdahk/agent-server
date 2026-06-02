@@ -23,12 +23,13 @@ export class DocumentsController {
   @UseInterceptors(
     FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }),
   )
-  @ApiConsumes('multipart/form-data')
+  @ApiConsumes('multipart/form-data') // 告诉 Swagger 这个接口需要上传文件,参数里才会出现 "Choose File" 的按钮
   @ApiOperation({
     summary: '上传文档,异步摄取;返回 documentId 与 runId 供订阅进度',
   })
   upload(
     @CurrentUser() user: AuthedUser,
+    // UploadedFile() 是 Nest 提供的参数装饰器,配合 FileInterceptor 使用,能把上传的文件注入到参数里
     @UploadedFile() file: UploadedDoc,
   ): Promise<{ documentId: number; runId: string }> {
     return this.documents.upload(user, file);

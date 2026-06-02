@@ -9,6 +9,7 @@ export interface SplitOptions {
   separators?: string[];
 }
 
+// 默认分隔符层级:先按段落分,再行,再空格,最后单字符;可自定义 separators 来覆盖默认层级
 const DEFAULT_SEPARATORS = ['\n\n', '\n', ' ', ''];
 
 export function splitText(text: string, opts: SplitOptions): string[] {
