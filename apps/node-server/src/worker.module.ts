@@ -5,8 +5,11 @@ import { QdrantModule } from './shared/qdrant/qdrant.module';
 import { LlmModule } from './shared/llm/llm.module';
 import { RunEngineModule } from './shared/run-engine/run-engine.module';
 import { QueueModule } from './shared/queue/queue.module';
+import { RagModule } from './shared/rag/rag.module';
 import { RunProcessor } from './modules/runs/run.processor';
 import { IngestionService } from './modules/documents/ingestion.service';
+import { AgentRunnerService } from './modules/agent/agent-runner.service';
+import { ToolRegistry } from './modules/agent/tool.registry';
 
 /**
  * worker 进程的根模块(无 HTTP)。
@@ -22,7 +25,8 @@ import { IngestionService } from './modules/documents/ingestion.service';
     LlmModule,
     RunEngineModule,
     QueueModule,
+    RagModule,
   ],
-  providers: [RunProcessor, IngestionService],
+  providers: [RunProcessor, IngestionService, AgentRunnerService, ToolRegistry],
 })
 export class WorkerModule {}

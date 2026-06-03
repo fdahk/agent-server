@@ -8,16 +8,20 @@ import { Job } from 'bullmq'; // Job 是 BullMQ 里表示一个队列任务的�
 import { RunEngineService } from '../../shared/run-engine/run-engine.service';
 import { RUNS_QUEUE, type RunJobData } from '../../shared/queue/queue.types';
 import { IngestionService } from '../documents/ingestion.service';
+import { AgentRunnerService } from '../agent/agent-runner.service';
 
-/** 演示作业的假步骤(agent_task kind),仅供 run-engine 链路自检 */
+/** 演示作业的假步骤,仅供 run-engine 链路自检 */
 const DEMO_STEPS = ['parsing', 'chunking', 'embedding', 'indexing'] as const;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * runs 队列消费者(仅在 worker 进程加载)。
- * 统一包住 start→...→complete/fail 生命周期,按 Run.kind 分派到具体处理逻辑;
+ * 统一包住 start→...→complete/fail 生命周期,按 job 名分派到具体处理逻辑;
  * 每一步都经 RunEngine.emit 落库 + Redis 广播,持有 SSE 连接的 web 副本据此实时推送。
+ *
+ * 用 job.name 而非 run.kind 分派:摄取与 demo 是两种 job,而真实 agent 任务与 demo
+ * 都是 kind=agent_task,只能靠入队时的 job 名(ingestion / agent / demo)区分。
  */
 @Processor(RUNS_QUEUE)
 export class RunProcessor extends WorkerHost {
@@ -26,22 +30,27 @@ export class RunProcessor extends WorkerHost {
   constructor(
     private readonly runEngine: RunEngineService,
     private readonly ingestion: IngestionService,
+    private readonly agent: AgentRunnerService,
   ) {
     super();
   }
 
   async process(job: Job<RunJobData>): Promise<void> {
     const { runId } = job.data;
-    this.logger.log(`开始处理 run=${runId} (job ${job.id})`);
+    this.logger.log(`开始处理 run=${runId} (job ${job.name} ${job.id})`);
     const run = await this.runEngine.getRun(runId);
     if (!run) throw new Error(`run 不存在: ${runId}`);
 
     try {
       await this.runEngine.start(runId);
-      switch (run.kind) {
+      switch (job.name) {
         case 'ingestion':
           await this.ingestion.ingest(run);
           await this.runEngine.complete(runId, 'ready');
+          break;
+        case 'agent':
+          await this.agent.run(run);
+          await this.runEngine.complete(runId, 'done');
           break;
         default:
           await this.runDemo(runId);

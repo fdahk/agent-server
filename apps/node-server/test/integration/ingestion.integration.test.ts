@@ -27,6 +27,7 @@ import {
 } from '../../src/shared/qdrant/qdrant.service';
 import { RunProcessor } from '../../src/modules/runs/run.processor';
 import { IngestionService } from '../../src/modules/documents/ingestion.service';
+import { AgentRunnerService } from '../../src/modules/agent/agent-runner.service';
 import {
   RUNS_QUEUE,
   type RunJobData,
@@ -60,6 +61,11 @@ const fakeQdrant = {
     IngestionService,
     { provide: LlmService, useValue: fakeLlm },
     { provide: QdrantService, useValue: fakeQdrant },
+    // 本测试只跑摄取 job,agent 分支用不到,用桩满足 RunProcessor 的依赖
+    {
+      provide: AgentRunnerService,
+      useValue: { run: () => Promise.resolve() },
+    },
   ],
 })
 class TestIngestionModule {}

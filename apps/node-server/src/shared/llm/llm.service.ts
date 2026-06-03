@@ -52,6 +52,24 @@ export class LlmService {
     }
   }
 
+  /**
+   * 带工具(function calling)的非流式 chat:供 agent 循环用。
+   * 返回原始 assistant 消息——可能带 tool_calls(要调工具)或带 content(最终答案)。
+   * 由调用方判别走向,不在这里替它决定。
+   */
+  async chatWithTools(
+    messages: ChatMessage[],
+    tools: OpenAI.Chat.Completions.ChatCompletionTool[],
+  ): Promise<OpenAI.Chat.Completions.ChatCompletionMessage> {
+    const resp = await this.client.chat.completions.create({
+      model: this.chatModel,
+      messages,
+      tools,
+      stream: false,
+    });
+    return resp.choices[0].message;
+  }
+
   /** 批量 embedding。单 string 自动包成 [string] */
   async embed(input: string | string[]): Promise<number[][]> {
     const batch = Array.isArray(input) ? input : [input];
