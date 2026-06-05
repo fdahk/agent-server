@@ -1,6 +1,8 @@
 import {
   Controller,
+  Delete,
   Get,
+  HttpCode,
   Param,
   ParseIntPipe,
   Post,
@@ -45,5 +47,15 @@ export class DocumentsController {
   @ApiOperation({ summary: '取单个文档(含摄取状态)' })
   get(@CurrentUser() user: AuthedUser, @Param('id', ParseIntPipe) id: number) {
     return this.documents.get(user.userId, id);
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  @ApiOperation({ summary: '删文档(同步清 Qdrant 向量 + 磁盘文件)' })
+  async delete(
+    @CurrentUser() user: AuthedUser,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<void> {
+    await this.documents.delete(user.userId, id);
   }
 }

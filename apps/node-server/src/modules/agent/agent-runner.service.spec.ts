@@ -33,7 +33,9 @@ const run = { runId: 'r1', userId: 7, task: '整理资料' } as Run;
 const toolCallMsg = (name: string, args = '{}') => ({
   role: 'assistant',
   content: null,
-  tool_calls: [{ id: 'c1', type: 'function', function: { name, arguments: args } }],
+  tool_calls: [
+    { id: 'c1', type: 'function', function: { name, arguments: args } },
+  ],
 });
 const finalMsg = (content: string) => ({
   role: 'assistant',
@@ -60,7 +62,11 @@ describe('AgentRunnerService', () => {
 
     await m.runner.run(run);
 
-    expect(types(m.emit)).toEqual(['tool_called', 'tool_result', 'final_answer']);
+    expect(types(m.emit)).toEqual([
+      'tool_called',
+      'tool_result',
+      'final_answer',
+    ]);
     const toolResult = m.emit.mock.calls.find((c) => c[1] === 'tool_result');
     expect(toolResult?.[2]).toMatchObject({
       name: 'list_documents',

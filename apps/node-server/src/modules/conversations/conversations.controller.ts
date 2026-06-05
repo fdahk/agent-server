@@ -1,7 +1,9 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
   Param,
   ParseIntPipe,
   Post,
@@ -41,6 +43,16 @@ export class ConversationsController {
   @ApiOperation({ summary: '取会话(含全量消息)' })
   get(@CurrentUser() user: AuthedUser, @Param('id', ParseIntPipe) id: number) {
     return this.conversations.get(user.userId, id);
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  @ApiOperation({ summary: '删会话(消息走 Prisma 级联删)' })
+  async delete(
+    @CurrentUser() user: AuthedUser,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<void> {
+    await this.conversations.delete(user.userId, id);
   }
 
   /**

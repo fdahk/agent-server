@@ -49,4 +49,11 @@ export class ConversationsService {
     }
     return conv;
   }
+
+  /** 删会话:Message 走 Prisma 级联删,无外部资源要清 */
+  async delete(userId: number, id: number): Promise<{ id: number }> {
+    const conv = await this.ensureOwned(userId, id);
+    await this.prisma.conversation.delete({ where: { id: conv.id } });
+    return { id: conv.id };
+  }
 }
