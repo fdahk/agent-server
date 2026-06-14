@@ -52,7 +52,7 @@ function makeController(opts: {
   return new RunsController(queue, engine, redis);
 }
 
-const user: AuthedUser = { userId: 7, username: 'u', role: 'USER' };
+const user: AuthedUser = { userId: 7, username: 'u', role: 'USER', scope: [] };
 
 describe('RunsController.stream(SSE)', () => {
   it('按 Last-Event-ID 只回放缺失事件,带 id/type,遇终态事件结束流', async () => {

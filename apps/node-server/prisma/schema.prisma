@@ -17,6 +17,11 @@ model User {
   passwordHash String   @map("password_hash") @db.VarChar(255)
   displayName  String   @map("display_name") @db.VarChar(128)
   roleCode     String   @map("role_code") @db.VarChar(32)
+  // 联合身份(federated identity):外部 IdP(our-chat)签发的 token 不复用其 sub 作主键,
+  // 而是按 (issuer, subject) 映射到本地自增主键,避免与本地注册用户 id 撞号。
+  // 本地 /auth/login 用户两列为 null;NULL 在 UNIQUE 下互不相等,故可有多行 null。
+  issuer       String?  @map("issuer") @db.VarChar(255)
+  subject      String?  @map("subject") @db.VarChar(64)
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -24,6 +29,7 @@ model User {
   conversations Conversation[]
   runs          Run[]
 
+  @@unique([issuer, subject])
   @@map("users")
 }
 

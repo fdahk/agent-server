@@ -1,6 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { generateKeyPairSync, createSign } from 'node:crypto';
 import { JwtStrategy } from './jwt.strategy';
+import type { FederatedIdentityService } from './federated-identity.service';
+
+// 本地路径(无 iss)不触达联合身份解析,stub 即可;federated 分支单独测。
+function fakeFederated(
+  resolve?: (...args: unknown[]) => Promise<number>,
+): FederatedIdentityService {
+  return {
+    resolveLocalUserId: vi.fn(resolve ?? (() => Promise.resolve(0))),
+  } as unknown as FederatedIdentityService;
+}
 
 // 暴露 JwtStrategy 的 private static resolveKey 以便单测
 interface MockClient {
@@ -92,15 +102,15 @@ describe('JwtStrategy.validate 载荷映射', () => {
     process.env.OAUTH_ISSUER = prevIssuer;
   });
 
-  it('HS256 自家 token 字段 username/role 透传,scope 空数组', () => {
-    const s = new JwtStrategy();
-    const u = s.validate({ sub: '42', username: 'neo', role: 'USER' });
+  it('HS256 自家 token 字段 username/role 透传,scope 空数组', async () => {
+    const s = new JwtStrategy(fakeFederated());
+    const u = await s.validate({ sub: '42', username: 'neo', role: 'USER' });
     expect(u).toEqual({ userId: 42, username: 'neo', role: 'USER', scope: [] });
   });
 
-  it('RS256 OAuth token 字段 preferred_username/scope 映射', () => {
-    const s = new JwtStrategy();
-    const u = s.validate({
+  it('无 iss token 字段 preferred_username/scope 映射(本地路径)', async () => {
+    const s = new JwtStrategy(fakeFederated());
+    const u = await s.validate({
       sub: '99',
       preferred_username: 'alice',
       scope: 'openid agent-server',
@@ -111,14 +121,35 @@ describe('JwtStrategy.validate 载荷映射', () => {
     expect(u.scope).toEqual(['openid', 'agent-server']);
   });
 
-  it('username 优先于 preferred_username(混合 token 时)', () => {
-    const s = new JwtStrategy();
-    const u = s.validate({
+  it('username 优先于 preferred_username(混合 token 时)', async () => {
+    const s = new JwtStrategy(fakeFederated());
+    const u = await s.validate({
       sub: '1',
       username: 'old',
       preferred_username: 'new',
     });
     expect(u.username).toBe('old');
+  });
+
+  it('带 iss 的外部 token → 走联合身份解析,userId 取本地映射 id 而非 sub', async () => {
+    const resolve = vi.fn(() => Promise.resolve(1001));
+    const fed = fakeFederated(resolve);
+    const s = new JwtStrategy(fed);
+    const u = await s.validate({
+      iss: 'http://localhost:3007',
+      sub: '5',
+      scope: 'agent-server',
+    });
+    expect(resolve).toHaveBeenCalledWith({
+      issuer: 'http://localhost:3007',
+      subject: '5',
+      usernameHint: undefined,
+      displayNameHint: undefined,
+    });
+    // 不复用 sub=5;取联合映射出的本地 id。
+    expect(u.userId).toBe(1001);
+    expect(u.username).toBe('oc_5');
+    expect(u.scope).toEqual(['agent-server']);
   });
 });
 // 防止 lint 警告未使用

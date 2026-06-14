@@ -22,6 +22,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { FederatedIdentityService } from './federated-identity.service';
 
 @Module({
   // imports:引入其他模块(如 JwtModule)提供的 provider;
@@ -44,6 +45,7 @@ import { JwtAuthGuard } from './jwt-auth.guard';
   // 全局 provider 让它在整个应用都能被注入(如 JwtAuthGuard);
   providers: [
     AuthService,
+    FederatedIdentityService,
     JwtStrategy,
     // APP_GUARD 让 JwtAuthGuard 全局生效,默认保护所有路由
     { provide: APP_GUARD, useClass: JwtAuthGuard },

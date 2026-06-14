@@ -22,6 +22,7 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import type { JwtFromRequestFunction } from 'passport-jwt';
 import { decode as jwtDecode } from 'jsonwebtoken';
 import jwksClient, { type JwksClient } from 'jwks-rsa';
+import { FederatedIdentityService } from './federated-identity.service';
 
 /** JWT 载荷:OAuth 2.1 标准 + 历史 HS256 自家约定混用 */
 export interface JwtPayload {
@@ -49,7 +50,7 @@ const RESOURCE_AUDIENCE = 'agent-server';
 export class JwtStrategy extends PassportStrategy(Strategy) {
   private static readonly logger = new Logger(JwtStrategy.name);
 
-  constructor() {
+  constructor(private readonly federated: FederatedIdentityService) {
     const { extractor, providerOptions } = JwtStrategy.buildOptions();
     super({
       jwtFromRequest: extractor,
@@ -139,14 +140,24 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     throw new Error(`不支持的 alg: ${header?.alg ?? 'unknown'}`);
   }
 
-  // 返回值即 req.user;sub 转回 number 与数据库主键一致
-  validate(payload: JwtPayload): AuthedUser {
+  // 返回值即 req.user。本地 HS256 token:sub 即本地主键。外部 IdP token(带 iss,
+  // 已被 passport-jwt 校验匹配 OAUTH_ISSUER):不能复用 sub 作主键,按 (iss, sub)
+  // 映射/zero-touch 创建本地用户,返回本地自增 id。
+  async validate(payload: JwtPayload): Promise<AuthedUser> {
     const scope = (payload.scope ?? '').split(/\s+/).filter(Boolean);
-    return {
-      userId: Number(payload.sub),
-      username: payload.username ?? payload.preferred_username ?? '',
-      role: payload.role ?? 'USER',
-      scope,
-    };
+    const username = payload.username ?? payload.preferred_username ?? '';
+    const role = payload.role ?? 'USER';
+
+    if (payload.iss) {
+      const userId = await this.federated.resolveLocalUserId({
+        issuer: payload.iss,
+        subject: payload.sub,
+        usernameHint: username || undefined,
+        displayNameHint: username || undefined,
+      });
+      return { userId, username: username || `oc_${payload.sub}`, role, scope };
+    }
+
+    return { userId: Number(payload.sub), username, role, scope };
   }
 }
