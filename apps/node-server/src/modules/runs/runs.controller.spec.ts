@@ -74,6 +74,36 @@ describe('RunsController.stream(SSE)', () => {
     expect(fakeRedis.subscribe).toHaveBeenCalledWith('run:run-x');
   });
 
+  it('补缺期间到达的实时事件先入 buffer,补缺后按 watermark 去重 flush(无缝且不重号)', async () => {
+    const fakeRedis = makeFakeRedis();
+    const controller = makeController({
+      run: { userId: 7, status: 'running' }, // 非终态,补缺后仍等实时
+      // sinceSeq=1 → 补缺 2、3(均非终态)
+      since: [ev(2, 'step'), ev(3, 'step')],
+      fakeRedis,
+    });
+    const req = { headers: { 'last-event-id': '1' }, query: {} } as never;
+
+    const got: { id?: string; type?: string }[] = [];
+    const completion = new Promise<void>((resolve, reject) => {
+      controller.stream('run-x', user, req).subscribe({
+        next: (e) => got.push({ id: e.id as string, type: e.type as string }),
+        complete: resolve,
+        error: reject,
+      });
+    });
+
+    // 此刻订阅已注册(sub.on 同步执行),补缺仍挂在 microtask 队列上未完成。
+    // 同步投递的实时事件会先进 liveBuffer:seq=3 与补缺重号应被去重,seq=4 终态收尾。
+    fakeRedis.deliver('run:run-x', ev(3, 'step')); // 与补缺 3 重号
+    fakeRedis.deliver('run:run-x', ev(4, 'run_completed')); // 实时新事件 + 终态
+
+    await completion;
+
+    expect(got.map((e) => e.id)).toEqual(['2', '3', '4']); // 3 只出现一次
+    expect(got.at(-1)?.type).toBe('run_completed');
+  });
+
   it('非本人/不存在的 run:流以错误结束(不泄露事件)', async () => {
     const fakeRedis = makeFakeRedis();
     const controller = makeController({
