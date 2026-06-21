@@ -18,16 +18,29 @@ import { RunEngineModule } from '../../src/shared/run-engine/run-engine.module';
 import { RunEngineService } from '../../src/shared/run-engine/run-engine.service';
 import { QueueModule } from '../../src/shared/queue/queue.module';
 import { RunProcessor } from '../../src/modules/runs/run.processor';
+import { IngestionService } from '../../src/modules/documents/ingestion.service';
+import { AgentRunnerService } from '../../src/modules/agent/agent-runner.service';
 import {
   RUNS_QUEUE,
   type RunJobData,
 } from '../../src/shared/queue/queue.types';
 import { runChannel } from '../../src/shared/run-engine/run-engine.types';
 
-// 复刻 worker 进程的模块图:基础设施 + runs 消费者(无 controller)
+// 复刻 worker 进程的模块图:基础设施 + runs 消费者(无 controller)。
+// 这里只测 demo job,摄取/agent 分支用不到,用桩替掉对应 service(避免 DI 缺 provider)。
 @Module({
   imports: [PrismaModule, RedisModule, RunEngineModule, QueueModule],
-  providers: [RunProcessor],
+  providers: [
+    RunProcessor,
+    {
+      provide: IngestionService,
+      useValue: { ingest: () => Promise.resolve() },
+    },
+    {
+      provide: AgentRunnerService,
+      useValue: { run: () => Promise.resolve() },
+    },
+  ],
 })
 class TestWorkerModule {}
 

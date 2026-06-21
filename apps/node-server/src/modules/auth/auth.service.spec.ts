@@ -1,6 +1,19 @@
+/**
+ * Vitest 是 Vite 生态的测试框架,定位等同 Jest(同样的 describe/it/expect API),
+ * 但用 esbuild/swc 编译、原生支持 ESM/TS、更快。本文件是"纯单元测试":不连真
+ * 数据库、不签真 token,而是用 mock 替掉 Prisma 和 JwtService,只验证 AuthService
+ * 自己的逻辑(密码必须哈希、防账号枚举、用户名占用抛 409 等)。
+ *
+ * - vitest —— 测试运行器与断言库。
+ * - @nestjs/common —— 取它的异常类,用来断言"抛出的是不是预期那种异常"。
+ */
+// describe/it —— 组织测试用例;expect —— 断言;beforeEach —— 每个用例前重置
+// vi —— Vitest 的工具命名空间,vi.fn() 造 mock 函数;Mock —— mock 函数的类型
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+// 这两个异常类用于 rejects.toBeInstanceOf(...) 断言:验证抛出的异常类型正确
 import { ConflictException, UnauthorizedException } from '@nestjs/common';
 import { AuthService } from './auth.service';
+// 仅作类型导入(type):mock 对象 `as unknown as PrismaService` 时用来对齐类型
 import type { PrismaService } from '../../shared/prisma/prisma.service';
 import type { JwtService } from '@nestjs/jwt';
 

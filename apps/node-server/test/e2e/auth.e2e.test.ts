@@ -8,8 +8,9 @@ import {
   StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import { RedisContainer, StartedRedisContainer } from '@testcontainers/redis';
-import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
+import { StartedTestContainer } from 'testcontainers';
 import { AppModule } from '../../src/app.module';
+import { startMilvusContainer } from '../helpers/milvus-container';
 
 /**
  * /api/auth 端到端:启全栈基础设施 → boot AppModule → 跑注册/登录全链路。
@@ -18,24 +19,24 @@ import { AppModule } from '../../src/app.module';
 
 let pgContainer: StartedPostgreSqlContainer;
 let redisContainer: StartedRedisContainer;
-let qdrantContainer: StartedTestContainer;
+let milvusContainer: StartedTestContainer;
 let app: INestApplication;
 
 beforeAll(async () => {
-  [pgContainer, redisContainer, qdrantContainer] = await Promise.all([
+  const [pg, redis, milvus] = await Promise.all([
     new PostgreSqlContainer('postgres:16-alpine').start(),
     new RedisContainer('redis:7-alpine').start(),
-    new GenericContainer('qdrant/qdrant:latest')
-      .withExposedPorts(6333)
-      .withWaitStrategy(Wait.forHttp('/readyz', 6333))
-      .start(),
+    startMilvusContainer(),
   ]);
+  pgContainer = pg;
+  redisContainer = redis;
+  milvusContainer = milvus.container;
 
   process.env.DATABASE_URL = pgContainer.getConnectionUri();
   process.env.REDIS_URL = redisContainer.getConnectionUrl();
-  process.env.QDRANT_URL = `http://${qdrantContainer.getHost()}:${qdrantContainer.getMappedPort(6333)}`;
-  process.env.QDRANT_VECTOR_SIZE = '4';
-  process.env.QDRANT_COLLECTION = 'auth_test_chunks';
+  process.env.MILVUS_ADDRESS = milvus.address;
+  process.env.MILVUS_VECTOR_SIZE = '4';
+  process.env.MILVUS_COLLECTION = 'auth_test_chunks';
   process.env.JWT_SECRET = 'test-secret-for-e2e-only';
   process.env.JWT_EXPIRE_SECONDS = '3600';
 
@@ -58,7 +59,7 @@ afterAll(async () => {
   await Promise.all([
     pgContainer?.stop(),
     redisContainer?.stop(),
-    qdrantContainer?.stop(),
+    milvusContainer?.stop(),
   ]);
 });
 

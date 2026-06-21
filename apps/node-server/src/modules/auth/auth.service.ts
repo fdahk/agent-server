@@ -1,9 +1,22 @@
+/**
+ * auth 的业务逻辑层(NestJS Service / Provider)。
+ *
+ * - @nestjs/common —— 这里取它内置的 HTTP 异常类:抛出即被全局异常过滤器转成对应
+ *   状态码的 JSON 响应(无需自己 res.status().json())。
+ * - @nestjs/jwt —— 提供 JwtService 来签发登录后的 token。
+ * - bcrypt —— 业界标准的密码哈希库(自带盐 + 可调强度的慢哈希),用于"存哈希、
+ *   不存明文"以及登录时比对。它是 C++ 原生扩展,故 import 写法略特殊。
+ */
+// ConflictException —— 抛出即 409(这里用于"用户名已被占用")
+// UnauthorizedException —— 抛出即 401(用于"用户名或密码错误")
 import {
   ConflictException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+// JwtService —— 由 JwtModule 提供,signAsync() 用配置好的密钥签发 token
 import { JwtService } from '@nestjs/jwt';
+// bcrypt 无默认导出,用 `* as` 拿到 hash()/compare() 等函数
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../shared/prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
@@ -20,6 +33,7 @@ export class AuthService {
     private readonly jwt: JwtService,
   ) {}
 
+  // 先查用户名:如果已存在,抛 409;如果不存在,哈希密码、落库、签 JWT、返回结果
   async register(dto: RegisterDto): Promise<AuthResponseDto> {
     const taken = await this.prisma.user.findUnique({
       where: { username: dto.username },

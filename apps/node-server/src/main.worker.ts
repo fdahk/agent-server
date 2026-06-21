@@ -3,7 +3,7 @@
  *
  * 用 createApplicationContext 起一个**无 HTTP 监听**的 Nest 上下文:不开端口,
  * 只初始化 DI 容器,@Processor 随之创建 BullMQ Worker 开始消费 runs 队列。
- * 与 web 进程 import 同一批 module、连同一个 Redis,可独立伸缩(详见 02 §6)。
+ * 与 web 进程 import 同一批 module、连同一个 Redis,可独立伸缩。
  */
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';

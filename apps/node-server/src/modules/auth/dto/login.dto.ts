@@ -1,5 +1,7 @@
 import { IsString, MaxLength, MinLength } from 'class-validator';
 
+// login.dto.ts —— 登录请求体
+
 export class LoginDto {
   @IsString()
   @MinLength(3)

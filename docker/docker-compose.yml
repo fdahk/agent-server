@@ -1,0 +1,194 @@
+# agent-server 全栈编排:中间件(postgres+redis+milvus 栈)+ node-server(HTTP)+ node-worker。
+#
+# 用法(在本目录 docker/ 下执行,自动加载同目录 .env):
+#   cd docker && cp .env.example .env       首次:填好 JWT_SECRET、LLM_* 等
+#   docker compose up -d --build            构建并启动全栈
+#   docker compose down                     停止(保留数据卷)
+#   docker compose down -v                  全清(含数据卷)
+#
+# 本地开发请改用 docker-compose.dev.yml(只起中间件,业务跑宿主机热重载,见根 Makefile)。
+name: agent-server
+
+# 单一配置源:同目录 .env 整体注入应用容器(对齐 docker/.env.example)。
+x-env-file: &env_file
+  - .env
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: agent-postgres
+    restart: unless-stopped
+    env_file: *env_file
+    environment:
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-agent} -d ${POSTGRES_DB:-agent_server}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [agent-server]
+
+  redis:
+    image: redis:7-alpine
+    container_name: agent-redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [agent-server]
+
+  # ── Milvus(standalone)及其依赖 etcd / minio ──
+  # 生产换腾讯 COS:移除 minio 服务,把 milvus 的 MINIO_* 指向 COS(见下方注释)。
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    container_name: agent-etcd
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: '1000'
+      ETCD_QUOTA_BACKEND_BYTES: '4294967296'
+      ETCD_SNAPSHOT_COUNT: '50000'
+    command:
+      - etcd
+      - -advertise-client-urls=http://etcd:2379
+      - -listen-client-urls=http://0.0.0.0:2379
+      - --data-dir=/etcd
+    volumes:
+      - etcd_data:/etcd
+    healthcheck:
+      test: ['CMD', 'etcdctl', 'endpoint', 'health']
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks: [agent-server]
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: agent-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: minio server /minio_data
+    volumes:
+      - minio_data:/minio_data
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks: [agent-server]
+
+  milvus:
+    image: milvusdb/milvus:v2.5.4
+    container_name: agent-milvus
+    restart: unless-stopped
+    command: ['milvus', 'run', 'standalone']
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # ── 生产换腾讯 COS(S3 兼容)时改这几项,并移除上面的 minio 服务 ──
+      #   MINIO_ADDRESS: cos.ap-guangzhou.myqcloud.com
+      #   MINIO_ACCESS_KEY_ID: <SecretId>
+      #   MINIO_SECRET_ACCESS_KEY: <SecretKey>
+      #   MINIO_USE_SSL: "true"
+      #   MINIO_BUCKET_NAME: <bucket>
+      #   MINIO_CLOUD_PROVIDER: tencent
+    volumes:
+      - milvus_data:/var/lib/milvus
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9091/healthz']
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 5
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks: [agent-server]
+
+  # ── 应用:node-server(HTTP/SSE)+ node-worker(BullMQ 消费),同一镜像、不同入口 ──
+  node-server:
+    build:
+      context: ../apps/node-server
+      dockerfile: Dockerfile
+    image: agent-server-node:local
+    container_name: agent-node-server
+    restart: unless-stopped
+    env_file: *env_file
+    environment:
+      NODE_ENV: production
+      PORT: 3101
+    ports:
+      - '${NODE_PORT:-3101}:3101'
+    volumes:
+      - node_storage:/app/storage
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3101/api || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    networks: [agent-server]
+
+  node-worker:
+    image: agent-server-node:local
+    container_name: agent-node-worker
+    restart: unless-stopped
+    command: ['node', 'dist/main.worker']
+    env_file: *env_file
+    environment:
+      NODE_ENV: production
+    volumes:
+      - node_storage:/app/storage
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    depends_on:
+      node-server:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    networks: [agent-server]
+
+volumes:
+  postgres_data:
+    name: agent-server-postgres-data
+  redis_data:
+    name: agent-server-redis-data
+  etcd_data:
+    name: agent-server-etcd-data
+  minio_data:
+    name: agent-server-minio-data
+  milvus_data:
+    name: agent-server-milvus-data
+  node_storage:
+    name: agent-server-node-storage
+
+networks:
+  agent-server:
+    driver: bridge

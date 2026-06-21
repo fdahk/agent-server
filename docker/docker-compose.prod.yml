@@ -1,0 +1,199 @@
+# agent-server 生产部署编排（只拉取镜像，不在服务器构建）。
+#
+# 与 our-chat 同机部署，经外部网络 oc-shared 互通（our-chat nginx 同源反代 /agent/ → 本服务；
+# 本服务经 oc-shared 访问 our-chat 的 JWKS 验签）。详见 docs/技术方案/agent-server对外入口方案对比…md。
+#
+# 配置分层：① 通用非机密 → 本文件 environment 默认值；② 机密 + 因环境而异 → 由 GitHub Actions
+# 在部署时按 Secrets 生成 /opt/agent-server/.env（env_file 注入；compose 同时读它做 ${} 替换）。
+#
+# 生产用腾讯 COS 作 Milvus 对象存储：已去掉 minio 服务，milvus 的 MINIO_* 指向 COS（凭据来自 .env）。
+#
+# 部署目录布局（CI 维护，运维零手工）：
+#   /opt/agent-server/
+#     docker-compose.prod.yml   # CI 每次同步
+#     .env                       # CI 每次按 Secrets 重写
+#
+# 前置：服务器需存在外部网络  →  docker network create oc-shared
+name: agent-server
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 未设置（应由 CI 写入 .env）}
+      POSTGRES_DB: ${POSTGRES_DB:-agent_server}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-agent} -d ${POSTGRES_DB:-agent_server}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [agent-server]
+
+  redis:
+    image: redis:7-alpine
+    container_name: agent-redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [agent-server]
+
+  # ── Milvus(standalone) + etcd；对象存储用腾讯 COS（无 minio 容器）──
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    container_name: agent-etcd
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: '1000'
+      ETCD_QUOTA_BACKEND_BYTES: '4294967296'
+      ETCD_SNAPSHOT_COUNT: '50000'
+    command:
+      - etcd
+      - -advertise-client-urls=http://etcd:2379
+      - -listen-client-urls=http://0.0.0.0:2379
+      - --data-dir=/etcd
+    volumes:
+      - etcd_data:/etcd
+    healthcheck:
+      test: ['CMD', 'etcdctl', 'endpoint', 'health']
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks: [agent-server]
+
+  milvus:
+    image: milvusdb/milvus:v2.5.4
+    container_name: agent-milvus
+    restart: unless-stopped
+    command: ['milvus', 'run', 'standalone']
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      # 对象存储 → 腾讯 COS（S3 兼容）。值由 .env 提供（CI 按 Secrets 写入）。
+      MINIO_ADDRESS: ${MILVUS_COS_ENDPOINT:?MILVUS_COS_ENDPOINT 未设置}
+      MINIO_ACCESS_KEY_ID: ${MILVUS_COS_ACCESS_KEY:?MILVUS_COS_ACCESS_KEY 未设置}
+      MINIO_SECRET_ACCESS_KEY: ${MILVUS_COS_SECRET_KEY:?MILVUS_COS_SECRET_KEY 未设置}
+      MINIO_BUCKET_NAME: ${MILVUS_COS_BUCKET:?MILVUS_COS_BUCKET 未设置}
+      MINIO_REGION: ${MILVUS_COS_REGION:-ap-guangzhou}
+      MINIO_USE_SSL: 'true'
+      MINIO_CLOUD_PROVIDER: tencent
+    volumes:
+      - milvus_data:/var/lib/milvus
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9091/healthz']
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 5
+    depends_on:
+      etcd:
+        condition: service_healthy
+    networks: [agent-server]
+
+  # ── 应用：node-server(HTTP/SSE) + node-worker(BullMQ)，同一镜像、不同入口 ──
+  node-server:
+    # tag 由 CI 注入（github.sha）；默认 latest 仅手动兜底。
+    image: ${AGENT_IMAGE:-ghcr.io/fdahk/agent-server-node:latest}
+    container_name: agent-node-server
+    restart: unless-stopped
+    # ②机密/环境相关由 CI 生成的 .env 注入（LLM_API_KEY、OAUTH_ISSUER 等）
+    env_file:
+      - .env
+    # ①通用非机密默认值（environment 优先于 env_file，作为权威默认）
+    environment:
+      NODE_ENV: production
+      PORT: '3101'
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agent}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agent_server}
+      REDIS_URL: redis://redis:6379
+      MILVUS_ADDRESS: milvus:19530
+      MILVUS_TOKEN: ${MILVUS_TOKEN:-}
+      MILVUS_COLLECTION: ${MILVUS_COLLECTION:-knowledge_chunks}
+      # 向量维度：必须与 LLM_EMBED_MODEL 输出一致（千问 text-embedding-v3 默认 1024）。换模型要重建集合！
+      MILVUS_VECTOR_SIZE: ${MILVUS_VECTOR_SIZE:-1024}
+      # 千问（DashScope）OpenAI 兼容端点；KEY 走 .env
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      LLM_CHAT_MODEL: ${LLM_CHAT_MODEL:-qwen-plus}
+      LLM_EMBED_MODEL: ${LLM_EMBED_MODEL:-text-embedding-v3}
+      JWT_EXPIRE_SECONDS: ${JWT_EXPIRE_SECONDS:-7200}
+      # JWKS 验签：经 oc-shared 直连 our-chat 的 server 容器（按容器名）
+      OAUTH_JWKS_URI: ${OAUTH_JWKS_URI:-http://our-chat-server:3007/.well-known/jwks.json}
+      # CORS：经 our-chat nginx 同源反代 → 留空（生产默认拒绝跨源，同源不需要）
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      DOCUMENT_MAX_BYTES: ${DOCUMENT_MAX_BYTES:-10485760}
+      DOCUMENT_STORAGE_DIR: /app/storage/documents
+      AGENT_OUTPUT_ROOT: /app/storage/agent-runs
+    volumes:
+      - node_storage:/app/storage
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3101/api || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    # agent-server: 自身中间件；oc-shared: 与 our-chat 互通（被 nginx 反代 + 访问其 JWKS）
+    networks: [agent-server, oc-shared]
+
+  node-worker:
+    image: ${AGENT_IMAGE:-ghcr.io/fdahk/agent-server-node:latest}
+    container_name: agent-node-worker
+    restart: unless-stopped
+    command: ['node', 'dist/main.worker']
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agent}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agent_server}
+      REDIS_URL: redis://redis:6379
+      MILVUS_ADDRESS: milvus:19530
+      MILVUS_COLLECTION: ${MILVUS_COLLECTION:-knowledge_chunks}
+      MILVUS_VECTOR_SIZE: ${MILVUS_VECTOR_SIZE:-1024}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      LLM_CHAT_MODEL: ${LLM_CHAT_MODEL:-qwen-plus}
+      LLM_EMBED_MODEL: ${LLM_EMBED_MODEL:-text-embedding-v3}
+      DOCUMENT_STORAGE_DIR: /app/storage/documents
+      AGENT_OUTPUT_ROOT: /app/storage/agent-runs
+    volumes:
+      - node_storage:/app/storage
+    depends_on:
+      # 等 node-server 健康（迁移已 apply）再起，避免 worker 打到未迁移的库
+      node-server:
+        condition: service_healthy
+    networks: [agent-server]
+
+volumes:
+  postgres_data:
+    name: agent-server-postgres-data
+  redis_data:
+    name: agent-server-redis-data
+  etcd_data:
+    name: agent-server-etcd-data
+  milvus_data:
+    name: agent-server-milvus-data
+  node_storage:
+    name: agent-server-node-storage
+
+networks:
+  agent-server:
+    driver: bridge
+  # 跨项目共享网络（与 our-chat 互通）；部署机一次性 `docker network create oc-shared`
+  oc-shared:
+    external: true

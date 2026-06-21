@@ -13,6 +13,8 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Queue } from 'bullmq';
 import type { Request } from 'express';
+// rxjs 一个响应式编程库,提供 Observable 类和丰富的操作符,在 NestJS 里常用来处理异步数据流,如这里的 SSE 事件流
+// Observable 是 RxJS 里表示一个可订阅的数据流的类,这里用它来实现 SSE 的事件流。
 import { Observable } from 'rxjs';
 import type { RunEvent } from '@prisma/client';
 import { RunEngineService } from '../../shared/run-engine/run-engine.service';
@@ -34,7 +36,7 @@ export class RunsController {
     private readonly redis: RedisService,
   ) {}
 
-  /** 造一个假 job 入队,worker 异步消费;立即返回 runId 供前端订阅进度(M2 验收用) */
+  /** 造一个假 job 入队,worker 异步消费;立即返回 runId 供前端订阅进度 */
   @Post('demo')
   @HttpCode(202)
   @ApiOperation({ summary: '入队一个演示作业,返回 runId' })
@@ -75,6 +77,7 @@ export class RunsController {
         (Array.isArray(headerId) ? headerId[0] : headerId) ?? queryId ?? 0,
       ) || 0;
 
+    // Observable 是 RxJS 里表示一个可订阅的数据流的类,这里用它来实现 SSE 的事件流。
     return new Observable<MessageEvent>((subscriber) => {
       const sub = this.redis.duplicate();
       let watermark = sinceSeq;

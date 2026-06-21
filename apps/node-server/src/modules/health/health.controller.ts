@@ -1,7 +1,7 @@
 import { Controller, Get } from '@nestjs/common';
 import { PrismaService } from '../../shared/prisma/prisma.service';
 import { RedisService } from '../../shared/redis/redis.service';
-import { QdrantService } from '../../shared/qdrant/qdrant.service';
+import { MilvusService } from '../../shared/milvus/milvus.service';
 import { Public } from '../auth/public.decorator';
 
 interface ComponentHealth {
@@ -14,14 +14,14 @@ interface HealthResponse {
   details: {
     postgres: ComponentHealth;
     redis: ComponentHealth;
-    qdrant: ComponentHealth;
+    milvus: ComponentHealth;
   };
 }
 
 /**
  * /api/health —— 基础设施联通性检查
  *
- * 并行(Promise.allSettled)探活 Postgres / Redis / Qdrant,任一项 down
+ * 并行(Promise.allSettled)探活 Postgres / Redis / Milvus,任一项 down
  * 整体 status = degraded,但仍 200 返回 details 供外部判断。
  * LLM 不纳入(外部服务、按需调用、健康检查里 ping 会浪费 token)。
  */
@@ -31,15 +31,16 @@ export class HealthController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
-    private readonly qdrant: QdrantService,
+    private readonly milvus: MilvusService,
   ) {}
 
   @Get()
   async check(): Promise<HealthResponse> {
-    const [pg, rd, qd] = await Promise.allSettled([
+    // showCollections 会发起一次 gRPC 调用,Milvus 不可达时 reject → 判 down
+    const [pg, rd, mv] = await Promise.allSettled([
       this.prisma.$queryRaw`SELECT 1`,
       this.redis.client.ping(),
-      this.qdrant.client.getCollections(),
+      this.milvus.client.showCollections(),
     ]);
 
     const toHealth = (r: PromiseSettledResult<unknown>): ComponentHealth =>
@@ -50,14 +51,14 @@ export class HealthController {
             error: String(r.reason),
           };
 
-    const allUp = [pg, rd, qd].every((r) => r.status === 'fulfilled');
+    const allUp = [pg, rd, mv].every((r) => r.status === 'fulfilled');
 
     return {
       status: allUp ? 'ok' : 'degraded',
       details: {
         postgres: toHealth(pg),
         redis: toHealth(rd),
-        qdrant: toHealth(qd),
+        milvus: toHealth(mv),
       },
     };
   }
