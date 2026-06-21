@@ -1,6 +1,7 @@
 name: deploy
 
-# 提交即自动部署：推送到 master → 构建 node-server 镜像推 GHCR → SSH 到服务器生成 .env → pull + compose up。
+# 提交即自动部署：推送到 master → 构建 node-server 镜像推 Docker Hub → SSH 到服务器生成 .env → up。
+# 用 Docker Hub 而非 GHCR：国内服务器经 daemon registry-mirrors 能拉 docker.io，但 GHCR 的镜像层(blob)在国内被墙。
 # 与 our-chat 同机、同模式：① 通用非机密在 compose 默认值；② 机密 + 因环境而异统一放 GitHub Secrets。
 # ② 由本工作流在部署时注入、在服务器生成 .env，服务器零手工维护。
 # 想用 dev 触发，把 branches 改成 [dev]；workflow_dispatch 支持手动触发。
@@ -14,23 +15,24 @@ permissions:
   packages: write
 
 env:
-  # node-server 单镜像（server 与 worker 共用，仅入口不同）
-  IMAGE: ghcr.io/${{ github.repository_owner }}/agent-server-node
+  # node-server 单镜像（server 与 worker 共用，仅入口不同）。owner=fdahk 同时也是 Docker Hub 用户名。
+  IMAGE: docker.io/${{ github.repository_owner }}/agent-server-node
 
 jobs:
   # ── 1) 构建并推送 node-server 镜像 ──
   build:
     name: 构建并推送镜像
     runs-on: ubuntu-latest
+    # 读 environment(pro) 里的 DOCKERHUB_USERNAME/DOCKERHUB_TOKEN
+    environment: pro
     steps:
       - uses: actions/checkout@v4
 
-      - name: 登录 GHCR
+      - name: 登录 Docker Hub
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - uses: docker/setup-buildx-action@v3
 
@@ -98,8 +100,6 @@ jobs:
         env:
           IMAGE: ${{ env.IMAGE }}
           GIT_SHA: ${{ github.sha }}
-          GHCR_USER: ${{ github.actor }}
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/agent-server' }}
           # —— 机密 + 因环境而异，统一走 GitHub Secrets ——
           POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
@@ -122,7 +122,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
-          envs: IMAGE,GIT_SHA,GHCR_USER,GHCR_TOKEN,DEPLOY_PATH,POSTGRES_USER,POSTGRES_DB,POSTGRES_PASSWORD,JWT_SECRET,LLM_API_KEY,LLM_BASE_URL,LLM_CHAT_MODEL,LLM_EMBED_MODEL,MILVUS_VECTOR_SIZE,OAUTH_ISSUER,MILVUS_COS_ENDPOINT,MILVUS_COS_ACCESS_KEY,MILVUS_COS_SECRET_KEY,MILVUS_COS_BUCKET,MILVUS_COS_REGION
+          envs: IMAGE,GIT_SHA,DEPLOY_PATH,POSTGRES_USER,POSTGRES_DB,POSTGRES_PASSWORD,JWT_SECRET,LLM_API_KEY,LLM_BASE_URL,LLM_CHAT_MODEL,LLM_EMBED_MODEL,MILVUS_VECTOR_SIZE,OAUTH_ISSUER,MILVUS_COS_ENDPOINT,MILVUS_COS_ACCESS_KEY,MILVUS_COS_SECRET_KEY,MILVUS_COS_BUCKET,MILVUS_COS_REGION
           # milvus(~1.5G)等基础镜像拉取慢,默认 10m 会被 "Run Command Timeout" 杀掉,放宽到 30m。
           command_timeout: 30m
           script_stop: true
@@ -154,16 +154,12 @@ jobs:
             } > .env
             chmod 600 .env
 
-            # —— 登录 GHCR → 用精确 sha 镜像 pull → up（node-server 启动自动 prisma migrate deploy）──
-            echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+            # 应用镜像在 Docker Hub(public)，服务器经 daemon registry-mirrors 拉取(免登录)。
+            # up --pull missing：只拉本地缺失的镜像(新 sha 的应用镜像)，已缓存的基础镜像不再去碰镜像源，
+            # 避免对 milvus 等大镜像做无谓的 manifest 复检导致卡死/超时(node-server 启动自动跑 prisma migrate)。
             export AGENT_IMAGE="${IMAGE}:${GIT_SHA}"
-            # 基础镜像(milvus 等)走国内镜像源偶发抖动,会让整次 pull 失败带崩部署。
-            # 用 --ignore-pull-failures 容忍:应用镜像仍从可达的 GHCR 拉新,其余命中本地缓存;
-            # up 再对缺失镜像兜底拉取(基础镜像已预拉缓存,无需联网)。
-            docker compose -f docker-compose.prod.yml pull --ignore-pull-failures
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans --pull missing
             docker image prune -f
-            docker logout ghcr.io || true
 
             echo "✅ agent-server 部署完成：${GIT_SHA}"
             docker compose -f docker-compose.prod.yml ps
