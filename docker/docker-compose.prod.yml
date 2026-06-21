@@ -139,7 +139,7 @@ services:
     volumes:
       - node_storage:/app/storage
     healthcheck:
-      test: ['CMD-SHELL', 'wget -qO- http://localhost:3101/api || exit 1']
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3101/api/health || exit 1']
       interval: 15s
       timeout: 5s
       retries: 5
