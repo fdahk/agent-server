@@ -157,7 +157,10 @@ jobs:
             # —— 登录 GHCR → 用精确 sha 镜像 pull → up（node-server 启动自动 prisma migrate deploy）──
             echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
             export AGENT_IMAGE="${IMAGE}:${GIT_SHA}"
-            docker compose -f docker-compose.prod.yml pull
+            # 基础镜像(milvus 等)走国内镜像源偶发抖动,会让整次 pull 失败带崩部署。
+            # 用 --ignore-pull-failures 容忍:应用镜像仍从可达的 GHCR 拉新,其余命中本地缓存;
+            # up 再对缺失镜像兜底拉取(基础镜像已预拉缓存,无需联网)。
+            docker compose -f docker-compose.prod.yml pull --ignore-pull-failures
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
             docker image prune -f
             docker logout ghcr.io || true
