@@ -52,7 +52,9 @@ services:
 
   # ── Milvus(standalone) + etcd；对象存储用腾讯 COS（无 minio 容器）──
   etcd:
-    image: quay.io/coreos/etcd:v3.5.18
+    # 国内服务器直连 quay.io 超时,且 daemon registry-mirrors 只代理 Docker Hub(不含 quay)。
+    # 故默认走 daocloud 的 quay 代理;可用 ETCD_IMAGE 覆盖(如网络可直连 quay)。
+    image: ${ETCD_IMAGE:-quay.m.daocloud.io/coreos/etcd:v3.5.18}
     container_name: agent-etcd
     restart: unless-stopped
     environment:

@@ -123,6 +123,8 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
           envs: IMAGE,GIT_SHA,GHCR_USER,GHCR_TOKEN,DEPLOY_PATH,POSTGRES_USER,POSTGRES_DB,POSTGRES_PASSWORD,JWT_SECRET,LLM_API_KEY,LLM_BASE_URL,LLM_CHAT_MODEL,LLM_EMBED_MODEL,MILVUS_VECTOR_SIZE,OAUTH_ISSUER,MILVUS_COS_ENDPOINT,MILVUS_COS_ACCESS_KEY,MILVUS_COS_SECRET_KEY,MILVUS_COS_BUCKET,MILVUS_COS_REGION
+          # milvus(~1.5G)等基础镜像拉取慢,默认 10m 会被 "Run Command Timeout" 杀掉,放宽到 30m。
+          command_timeout: 30m
           script_stop: true
           script: |
             set -euo pipefail

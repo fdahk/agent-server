@@ -151,7 +151,6 @@ CMD ["sh","-c","./node_modules/.bin/prisma migrate deploy && node dist/main"]
 
 ---
 
-=======
 ## 3.5 同源的另一个坑：builder 阶段 `prisma generate` 的拷贝顺序（首次部署实测翻车）
 
 上面修的是**运行阶段**。但首次 CI 构建在更早的**构建阶段**就挂了，错误是：
@@ -278,7 +277,6 @@ node-worker:
 - [ ] `migrate deploy` 依赖的 `prisma/`（schema + migrations）是否 `COPY` 进了运行阶段？
 - [ ] alpine 基镜是否 `apk add openssl`？prisma 查询引擎在 musl 上需要它。
 - [ ] `@prisma/client` 是否已 `generate`（postinstall 跑过、或从 builder 拷了生成产物）？
-=======
 - [ ] builder 阶段：`prisma/` 是否在 `pnpm install` **之前**拷入？否则 postinstall 的 `prisma generate` 找不到 schema，install 直接失败。
 - [ ] 多入口（server/worker）复用同一镜像时，**迁移只挂在一个入口的 CMD 上**，另一个 `depends_on` 它健康。
 - [ ] 多阶段构建里，凡是运行需要、又没显式 `COPY --from=builder` 的，运行阶段一律不存在——逐个对照。
