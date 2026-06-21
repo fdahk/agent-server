@@ -1,0 +1,164 @@
+name: deploy
+
+# 提交即自动部署：推送到 master → 构建 node-server 镜像推 GHCR → SSH 到服务器生成 .env → pull + compose up。
+# 与 our-chat 同机、同模式：① 通用非机密在 compose 默认值；② 机密 + 因环境而异统一放 GitHub Secrets。
+# ② 由本工作流在部署时注入、在服务器生成 .env，服务器零手工维护。
+# 想用 dev 触发，把 branches 改成 [dev]；workflow_dispatch 支持手动触发。
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # node-server 单镜像（server 与 worker 共用，仅入口不同）
+  IMAGE: ghcr.io/${{ github.repository_owner }}/agent-server-node
+
+jobs:
+  # ── 1) 构建并推送 node-server 镜像 ──
+  build:
+    name: 构建并推送镜像
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 构建并推送 node-server
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/node-server
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha,scope=agent-node
+          cache-to: type=gha,mode=max,scope=agent-node
+
+  # ── 2) 同步 compose + 生成 .env + 拉取镜像滚动重启 ──
+  deploy:
+    name: 部署到服务器
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pro
+    concurrency:
+      group: deploy-agent-prod
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 预检必填 Secrets
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          OAUTH_ISSUER: ${{ secrets.OAUTH_ISSUER }}
+          MILVUS_COS_ENDPOINT: ${{ secrets.MILVUS_COS_ENDPOINT }}
+          MILVUS_COS_ACCESS_KEY: ${{ secrets.MILVUS_COS_ACCESS_KEY }}
+          MILVUS_COS_SECRET_KEY: ${{ secrets.MILVUS_COS_SECRET_KEY }}
+          MILVUS_COS_BUCKET: ${{ secrets.MILVUS_COS_BUCKET }}
+        run: |
+          miss=0
+          for v in SSH_HOST SSH_USER SSH_PRIVATE_KEY POSTGRES_PASSWORD JWT_SECRET LLM_API_KEY OAUTH_ISSUER MILVUS_COS_ENDPOINT MILVUS_COS_ACCESS_KEY MILVUS_COS_SECRET_KEY MILVUS_COS_BUCKET; do
+            if [ -z "${!v:-}" ]; then echo "❌ 缺少 Secret：$v"; miss=1; else echo "✓ Secret $v 已设置"; fi
+          done
+          if [ "$miss" -ne 0 ]; then
+            echo "::error::有必填 Secret 读不到。确认它们都配在 environment『pro』的 Secrets 页下（本 job 已声明 environment: pro）。"
+            exit 1
+          fi
+          echo "✅ 所有必填 Secret 齐全（environment: pro 读取正常）"
+
+      - name: 同步 compose 到服务器
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: 'docker/docker-compose.prod.yml'
+          target: ${{ secrets.DEPLOY_PATH || '/opt/agent-server' }}
+          strip_components: 1
+          overwrite: true
+
+      - name: 生成 .env + 拉取镜像 + 滚动重启
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          GIT_SHA: ${{ github.sha }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/agent-server' }}
+          # —— 机密 + 因环境而异，统一走 GitHub Secrets ——
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_CHAT_MODEL: ${{ secrets.LLM_CHAT_MODEL }}
+          LLM_EMBED_MODEL: ${{ secrets.LLM_EMBED_MODEL }}
+          MILVUS_VECTOR_SIZE: ${{ secrets.MILVUS_VECTOR_SIZE }}
+          OAUTH_ISSUER: ${{ secrets.OAUTH_ISSUER }}
+          MILVUS_COS_ENDPOINT: ${{ secrets.MILVUS_COS_ENDPOINT }}
+          MILVUS_COS_ACCESS_KEY: ${{ secrets.MILVUS_COS_ACCESS_KEY }}
+          MILVUS_COS_SECRET_KEY: ${{ secrets.MILVUS_COS_SECRET_KEY }}
+          MILVUS_COS_BUCKET: ${{ secrets.MILVUS_COS_BUCKET }}
+          MILVUS_COS_REGION: ${{ secrets.MILVUS_COS_REGION }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: IMAGE,GIT_SHA,GHCR_USER,GHCR_TOKEN,DEPLOY_PATH,POSTGRES_USER,POSTGRES_DB,POSTGRES_PASSWORD,JWT_SECRET,LLM_API_KEY,LLM_BASE_URL,LLM_CHAT_MODEL,LLM_EMBED_MODEL,MILVUS_VECTOR_SIZE,OAUTH_ISSUER,MILVUS_COS_ENDPOINT,MILVUS_COS_ACCESS_KEY,MILVUS_COS_SECRET_KEY,MILVUS_COS_BUCKET,MILVUS_COS_REGION
+          script_stop: true
+          script: |
+            set -euo pipefail
+            umask 077
+            cd "${DEPLOY_PATH}"
+
+            # 共享网络（与 our-chat 互通）：不存在则建（幂等）
+            docker network inspect oc-shared >/dev/null 2>&1 || docker network create oc-shared
+
+            # —— 生成 .env（仅机密/环境相关；通用默认在 compose）。空值的可选项不写入，留 compose 默认 ——
+            {
+              echo "POSTGRES_USER=${POSTGRES_USER:-agent}"
+              echo "POSTGRES_DB=${POSTGRES_DB:-agent_server}"
+              echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
+              echo "JWT_SECRET=${JWT_SECRET}"
+              echo "LLM_API_KEY=${LLM_API_KEY}"
+              echo "OAUTH_ISSUER=${OAUTH_ISSUER}"
+              echo "MILVUS_COS_ENDPOINT=${MILVUS_COS_ENDPOINT}"
+              echo "MILVUS_COS_ACCESS_KEY=${MILVUS_COS_ACCESS_KEY}"
+              echo "MILVUS_COS_SECRET_KEY=${MILVUS_COS_SECRET_KEY}"
+              echo "MILVUS_COS_BUCKET=${MILVUS_COS_BUCKET}"
+              [ -n "${MILVUS_COS_REGION:-}" ]  && echo "MILVUS_COS_REGION=${MILVUS_COS_REGION}"
+              [ -n "${MILVUS_VECTOR_SIZE:-}" ] && echo "MILVUS_VECTOR_SIZE=${MILVUS_VECTOR_SIZE}"
+              [ -n "${LLM_BASE_URL:-}" ]       && echo "LLM_BASE_URL=${LLM_BASE_URL}"
+              [ -n "${LLM_CHAT_MODEL:-}" ]     && echo "LLM_CHAT_MODEL=${LLM_CHAT_MODEL}"
+              [ -n "${LLM_EMBED_MODEL:-}" ]    && echo "LLM_EMBED_MODEL=${LLM_EMBED_MODEL}"
+            } > .env
+            chmod 600 .env
+
+            # —— 登录 GHCR → 用精确 sha 镜像 pull → up（node-server 启动自动 prisma migrate deploy）──
+            echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+            export AGENT_IMAGE="${IMAGE}:${GIT_SHA}"
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            docker image prune -f
+            docker logout ghcr.io || true
+
+            echo "✅ agent-server 部署完成：${GIT_SHA}"
+            docker compose -f docker-compose.prod.yml ps
