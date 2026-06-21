@@ -151,6 +151,53 @@ CMD ["sh","-c","./node_modules/.bin/prisma migrate deploy && node dist/main"]
 
 ---
 
+=======
+## 3.5 同源的另一个坑：builder 阶段 `prisma generate` 的拷贝顺序（首次部署实测翻车）
+
+上面修的是**运行阶段**。但首次 CI 构建在更早的**构建阶段**就挂了，错误是：
+
+```
+> prisma generate
+Error: Could not find Prisma Schema that is required for this command.
+  schema.prisma: file not found
+  prisma/schema.prisma: file not found
+```
+
+原因同样和 Docker 分层有关。Dockerfile 为了**利用层缓存**，习惯先只拷依赖清单再装依赖：
+
+```dockerfile
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile   # ← prisma 的 postinstall(prisma generate)在这一步就跑
+COPY . .                             # ← prisma/schema.prisma 这时才被拷进来
+```
+
+关键时序：`pnpm install` 会触发 package.json 里的 `"postinstall": "prisma generate"`，
+而 `prisma generate` 要读 `prisma/schema.prisma`。可此刻 `COPY . .` **还没执行**——构建上下文里只有
+package.json + lockfile，schema 根本不在 ⇒ generate 找不到 schema ⇒ install 失败 ⇒ 整个构建失败。
+
+> 为什么本地 `pnpm install` 不报这个错？因为本地是在一个 schema 已经躺在 `prisma/` 里的完整工作区跑的，
+> generate 当然找得到。Docker 「先拷清单、后拷源码」的切分是为缓存人为做的，恰好把 schema 切到了 install 之后。
+
+**修法**：在 `install` 之前先把 `prisma/` 拷进去：
+
+```dockerfile
+COPY package.json pnpm-lock.yaml ./
+COPY prisma ./prisma                 # ← 关键:让 postinstall 的 generate 找得到 schema
+RUN pnpm install --frozen-lockfile
+COPY . .                             # node_modules 在 .dockerignore,不会覆盖已生成的 client
+```
+
+既保留「依赖层缓存」（schema 变动远少于源码），又让 postinstall 正常生成 client。
+
+> 另一种思路是 `pnpm install --ignore-scripts` 跳过所有 postinstall、之后再显式 `prisma generate`。
+> 不推荐：会连带跳过 bcrypt 等原生模块的构建脚本，引新坑。单独拷 `prisma/` 是更外科的修法。
+
+> 📌 和第 2 节的运行阶段联动：builder 这里 generate 出来的 client 在 `node_modules` 里，
+> 运行阶段 `COPY --from=builder .../node_modules` 直接搬走——所以**只要 builder 这步成功，运行阶段就有现成 client**，
+> 不必在 runtime 再 generate 一次。两个坑其实是同一根线（prisma 产物 + Docker 分层）的两端。
+
+---
+
 ## 4. 取舍：为什么直接拷全量 node_modules，而不是 runtime 再 `--prod`
 
 这是这次修复里**唯一有争议、值得展开**的设计点。两条路：
@@ -231,5 +278,7 @@ node-worker:
 - [ ] `migrate deploy` 依赖的 `prisma/`（schema + migrations）是否 `COPY` 进了运行阶段？
 - [ ] alpine 基镜是否 `apk add openssl`？prisma 查询引擎在 musl 上需要它。
 - [ ] `@prisma/client` 是否已 `generate`（postinstall 跑过、或从 builder 拷了生成产物）？
+=======
+- [ ] builder 阶段：`prisma/` 是否在 `pnpm install` **之前**拷入？否则 postinstall 的 `prisma generate` 找不到 schema，install 直接失败。
 - [ ] 多入口（server/worker）复用同一镜像时，**迁移只挂在一个入口的 CMD 上**，另一个 `depends_on` 它健康。
 - [ ] 多阶段构建里，凡是运行需要、又没显式 `COPY --from=builder` 的，运行阶段一律不存在——逐个对照。

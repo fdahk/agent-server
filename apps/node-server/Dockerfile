@@ -5,6 +5,10 @@ WORKDIR /build
 
 COPY package.json package-lock.json* pnpm-lock.yaml* ./
 
+# prisma 的 postinstall 钩子(prisma generate)在 install 阶段就会跑,需要 schema 先就位。
+# 故在 install 前先拷 prisma/(schema+migrations);否则 generate 找不到 schema,install 直接失败。
+COPY prisma ./prisma
+
 # 安装全部依赖（含 devDependencies，编译需要 TypeScript、NestJS CLI 等）
 RUN corepack enable pnpm && pnpm install --frozen-lockfile
 
