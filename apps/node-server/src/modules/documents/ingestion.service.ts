@@ -4,11 +4,11 @@ import { readFile } from 'node:fs/promises';
 import type { Run } from '@prisma/client';
 import { PrismaService } from '../../shared/prisma/prisma.service';
 import { LlmService } from '../../shared/llm/llm.service';
-// QdrantService 提供 upsertChunks() 方法,能把切分好的文本块和它们的向量一起写到 Qdrant 里
+// MilvusService 提供 upsertChunks() 方法,能把切分好的文本块和它们的向量一起写到 Milvus 里
 import {
-  QdrantService,
+  MilvusService,
   type ChunkPoint,
-} from '../../shared/qdrant/qdrant.service';
+} from '../../shared/milvus/milvus.service';
 import { RunEngineService } from '../../shared/run-engine/run-engine.service';
 import { parseToText } from './document-parser';
 // 文本切分和 token 估算函数
@@ -19,11 +19,11 @@ const CHUNK_OVERLAP = 100;
 const EMBED_BATCH = 16;
 
 /**
- * 文档摄取:解析 → 切分 → 批量 embedding → 双写(Postgres chunk + Qdrant 向量)。
+ * 文档摄取:解析 → 切分 → 批量 embedding → 双写(Postgres chunk + Milvus 向量)。
  *
  * 在 worker 进程内由 RunProcessor 调度,逐步经 run-engine 广播进度。
- * 双写顺序:先写 Postgres DocumentChunk(拿 chunkId)→ upsert Qdrant(payload 带 chunk_id),
- * Qdrant 失败则整个 job 失败重试。重试幂等靠开写前按 document_id 清场两边旧数据。
+ * 双写顺序:先写 Postgres DocumentChunk(拿 chunkId)→ upsert Milvus(payload 带 chunk_id),
+ * Milvus 失败则整个 job 失败重试。重试幂等靠开写前按 document_id 清场两边旧数据。
  */
 @Injectable()
 export class IngestionService {
@@ -32,7 +32,7 @@ export class IngestionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly llm: LlmService,
-    private readonly qdrant: QdrantService,
+    private readonly milvus: MilvusService,
     private readonly runEngine: RunEngineService,
   ) {}
 
@@ -66,7 +66,7 @@ export class IngestionService {
       });
 
       // 重试幂等:开写前清掉本文档可能残留的两边旧数据
-      await this.qdrant.deleteByDocument(documentId);
+      await this.milvus.deleteByDocument(documentId);
       // prisma.documentChunk.deleteMany() 没有 where { documentId }
       // 这样的批量删除接口,只能先查 chunkId 列表再逐条删;但性能还行,每次摄取的 chunk 数量级在几百以下
       await this.prisma.documentChunk.deleteMany({ where: { documentId } });
@@ -75,7 +75,7 @@ export class IngestionService {
       for (let start = 0; start < chunks.length; start += EMBED_BATCH) {
         const batch = chunks.slice(start, start + EMBED_BATCH);
         const vectors = await this.llm.embed(batch);
-        // points 是要写到 Qdrant 的数据结构:每个 chunk 对应一个 point,
+        // points 是要写到 Milvus 的数据结构:每个 chunk 对应一个 point,
         // 包含 id/vector/payload 三部分;payload 里带上 documentId 和 chunkId 以便后续搜索时能知道这个向量对应哪个文档的哪个 chunk
         const points: ChunkPoint[] = [];
 
@@ -83,8 +83,8 @@ export class IngestionService {
           const chunkIndex = start + j;
           const content = batch[j];
           const pointId = randomUUID();
-          // 把这个 chunk 写到 Postgres 里,拿到 chunkId 后再写 Qdrant;
-          // 如果写 Qdrant 失败了,这个 chunk 就算没写成功,下次重试时还会再写一次
+          // 把这个 chunk 写到 Postgres 里,拿到 chunkId 后再写 Milvus;
+          // 如果写 Milvus 失败了,这个 chunk 就算没写成功,下次重试时还会再写一次
           const chunk = await this.prisma.documentChunk.create({
             data: {
               documentId,
@@ -92,11 +92,11 @@ export class IngestionService {
               chunkIndex,
               content,
               tokenCount: estimateTokens(content),
-              qdrantPointId: pointId,
+              vectorId: pointId,
             },
           });
           // points.push() 用于把这个 chunk 对应的向量和它的 metadata 一起收集到 points 数组里
-          // 等这个 batch 的所有 chunk 都处理完了再批量写到 Qdrant
+          // 等这个 batch 的所有 chunk 都处理完了再批量写到 Milvus
           points.push({
             id: pointId,
             vector: vectors[j],
@@ -109,7 +109,7 @@ export class IngestionService {
           });
         }
 
-        await this.qdrant.upsertChunks(points);
+        await this.milvus.upsertChunks(points);
         written += batch.length;
         await this.runEngine.emit(run.runId, 'step', {
           step: 'embedding',

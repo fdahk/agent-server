@@ -1,0 +1,132 @@
+# agent-server 本地开发:只起中间件(postgres + redis + milvus 栈),业务跑在宿主机热重载。
+#
+# 推荐用仓库根 Makefile 一键起全部:make dev
+# 本文件单独用:make middleware,或 cd docker && docker compose -f docker-compose.dev.yml up -d
+#
+# 端口偏移(5433/6380/19530)直接烤进默认值,避开 our-chat 的 5432/6379,两项目中间件可并行;
+# 故本文件零配置即可用(无需 .env)。Milvus 的 etcd/minio 仅内部使用,不向宿主机暴露端口。
+name: agent-server
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent}
+      POSTGRES_DB: ${POSTGRES_DB:-agent_server}
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - '${POSTGRES_PORT:-5433}:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-agent} -d ${POSTGRES_DB:-agent_server}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [agent-server]
+
+  redis:
+    image: redis:7-alpine
+    container_name: agent-redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '${REDIS_PORT:-6380}:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [agent-server]
+
+  # ── Milvus(standalone)及其依赖 etcd / minio ──
+  # etcd / minio 仅供 milvus 内部使用,不暴露宿主端口(避免与 our-chat 的 MinIO 撞 9000)。
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    container_name: agent-etcd
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: '1000'
+      ETCD_QUOTA_BACKEND_BYTES: '4294967296'
+      ETCD_SNAPSHOT_COUNT: '50000'
+    command:
+      - etcd
+      - -advertise-client-urls=http://etcd:2379
+      - -listen-client-urls=http://0.0.0.0:2379
+      - --data-dir=/etcd
+    volumes:
+      - etcd_data:/etcd
+    healthcheck:
+      test: ['CMD', 'etcdctl', 'endpoint', 'health']
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks: [agent-server]
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: agent-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: minio server /minio_data
+    volumes:
+      - minio_data:/minio_data
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks: [agent-server]
+
+  milvus:
+    image: milvusdb/milvus:v2.5.4
+    container_name: agent-milvus
+    restart: unless-stopped
+    command: ['milvus', 'run', 'standalone']
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - milvus_data:/var/lib/milvus
+    ports:
+      - '${MILVUS_PORT:-19530}:19530'
+      - '${MILVUS_HTTP_PORT:-9091}:9091'
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9091/healthz']
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 5
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks: [agent-server]
+
+volumes:
+  postgres_data:
+    name: agent-server-postgres-data
+  redis_data:
+    name: agent-server-redis-data
+  etcd_data:
+    name: agent-server-etcd-data
+  minio_data:
+    name: agent-server-minio-data
+  milvus_data:
+    name: agent-server-milvus-data
+
+networks:
+  agent-server:
+    driver: bridge

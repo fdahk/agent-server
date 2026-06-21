@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from './shared/prisma/prisma.module';
 import { RedisModule } from './shared/redis/redis.module';
-import { QdrantModule } from './shared/qdrant/qdrant.module';
+import { MilvusModule } from './shared/milvus/milvus.module';
 import { LlmModule } from './shared/llm/llm.module';
 import { RunEngineModule } from './shared/run-engine/run-engine.module';
 import { QueueModule } from './shared/queue/queue.module';
@@ -19,9 +20,11 @@ import { ToolRegistry } from './modules/agent/tool.registry';
  */
 @Module({
   imports: [
+    // 与 AppModule 一致:worker 进程也需最先加载 .env(宿主机开发用;容器走 environment 注入)。
+    ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
     RedisModule,
-    QdrantModule,
+    MilvusModule,
     LlmModule,
     RunEngineModule,
     QueueModule,

@@ -1,6 +1,6 @@
 # documents 模块
 
-负责**文档的上传与摄取(ingestion)**:接收用户上传的文件 → 存盘 → 异步把文件解析、切分、向量化,**双写**到 Postgres(原文 chunk)和 Qdrant(向量),供后续 RAG 检索使用。
+负责**文档的上传与摄取(ingestion)**:接收用户上传的文件 → 存盘 → 异步把文件解析、切分、向量化,**双写**到 Postgres(原文 chunk)和 Milvus(向量),供后续 RAG 检索使用。
 
 这是典型的"**HTTP 快返回 + 后台慢处理**"模式:上传请求只做存盘和入队就立即返回,真正耗时的解析/embedding 在 worker 进程异步跑,进度经 run-engine 广播。
 
@@ -13,7 +13,7 @@
 | `documents.module.ts` | web | 装配:imports `QueueModule` 拿到入队句柄 |
 | `documents.controller.ts` | web | HTTP 入口:`POST /documents`(上传)、`GET /documents`(列表)、`GET /documents/:id`(详情含状态) |
 | `documents.service.ts` | web | 存盘 → 建 `Document(status=queued)` → 起 ingestion run → 入队;**不在请求线程里解析** |
-| `ingestion.service.ts` | **worker** | 摄取核心:解析→切分→批量 embedding→双写 Postgres+Qdrant;由 `RunProcessor` 调度 |
+| `ingestion.service.ts` | **worker** | 摄取核心:解析→切分→批量 embedding→双写 Postgres+Milvus;由 `RunProcessor` 调度 |
 | `document-parser.ts` | 两端 | 纯函数:扩展名白名单、大小上限、把 pdf/docx/txt 字节解析成纯文本 |
 | `text-splitter.ts` | worker | 纯函数:递归字符切分(对齐 LangChain 语义),无第三方依赖 |
 
@@ -31,19 +31,19 @@ POST /documents (multipart, file)
   RunProcessor 消费 → IngestionService.ingest(run):
   5. status=processing → emit step:parsing → 读文件 → parseToText
   6. splitText(CHUNK_SIZE=800, CHUNK_OVERLAP=100) → emit step:chunking
-  7. 清场(按 document_id 删 Qdrant + Postgres 旧 chunk)← 重试幂等
-  8. 分批(EMBED_BATCH=16):embed → 每 chunk 先写 Postgres(拿 chunkId)→ 收集点 → upsert Qdrant → emit step:embedding{done,total}
+  7. 清场(按 document_id 删 Milvus + Postgres 旧 chunk)← 重试幂等
+  8. 分批(EMBED_BATCH=16):embed → 每 chunk 先写 Postgres(拿 chunkId)→ 收集点 → upsert Milvus → emit step:embedding{done,total}
   9. status=ready, chunkCount=N
   失败任一步 → status=failed + errorMsg,异常上抛交 BullMQ 重试
 ```
 
 ## 三、双写一致性设计(重点)
 
-向量库 Qdrant 和关系库 Postgres 是两个独立存储,没有跨库事务。本模块的取舍:
+向量库 Milvus 和关系库 Postgres 是两个独立存储,没有跨库事务。本模块的取舍:
 
-- **写入顺序:先 Postgres 后 Qdrant。** 每个 chunk 先在 Postgres 落行(生成 `chunk.id`),再把带 `chunk_id` 的点 upsert 进 Qdrant。这样 Qdrant 里的每个向量都能反查回一条真实的 Postgres 记录。
+- **写入顺序:先 Postgres 后 Milvus。** 每个 chunk 先在 Postgres 落行(生成 `chunk.id`),再把带 `chunk_id` 的点 upsert 进 Milvus。这样 Milvus 里的每个向量都能反查回一条真实的 Postgres 记录。
 - **失败即整 job 失败重试。** 任一步抛错,`Document.status=failed`,异常上抛交 BullMQ 走重试。
-- **重试幂等靠"先清场"。** 重试时在开写前按 `document_id` 把 Qdrant 和 Postgres 的旧 chunk 都删干净,再重新写,避免重复累积。这是幂等的关键——see `ingestion.service.ts` 第 65-67 行。
+- **重试幂等靠"先清场"。** 重试时在开写前按 `document_id` 把 Milvus 和 Postgres 的旧 chunk 都删干净,再重新写,避免重复累积。这是幂等的关键——see `ingestion.service.ts` 第 65-67 行。
 
 ## 四、注意事项
 

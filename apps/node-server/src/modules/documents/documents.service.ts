@@ -11,7 +11,7 @@ import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type { Document } from '@prisma/client';
 import { PrismaService } from '../../shared/prisma/prisma.service';
-import { QdrantService } from '../../shared/qdrant/qdrant.service';
+import { MilvusService } from '../../shared/milvus/milvus.service';
 import { RunEngineService } from '../../shared/run-engine/run-engine.service';
 import { RUNS_QUEUE, type RunJobData } from '../../shared/queue/queue.types';
 import type { AuthedUser } from '../auth/jwt.strategy';
@@ -37,7 +37,7 @@ export class DocumentsService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly qdrant: QdrantService,
+    private readonly milvus: MilvusService,
     private readonly runEngine: RunEngineService,
     @InjectQueue(RUNS_QUEUE) private readonly runsQueue: Queue<RunJobData>,
   ) {}
@@ -105,12 +105,12 @@ export class DocumentsService {
   }
 
   /**
-   * 删文档:Qdrant 向量先清 → Postgres Document 行删(DocumentChunk 级联删)→
+   * 删文档:Milvus 向量先清 → Postgres Document 行删(DocumentChunk 级联删)→
    * 磁盘文件尽力删。顺序:外存在前、强一致存储在后,失败可手动重试不留孤儿。
    */
   async delete(userId: number, id: number): Promise<{ id: number }> {
     const doc = await this.get(userId, id);
-    await this.qdrant.deleteByDocument(doc.id);
+    await this.milvus.deleteByDocument(doc.id);
     await this.prisma.document.delete({ where: { id: doc.id } });
     try {
       await unlink(doc.storagePath);

@@ -1,6 +1,6 @@
 # health 模块
 
-负责**基础设施联通性检查(liveness/readiness)**:暴露一个公开端点 `GET /api/health`,并行探活 Postgres / Redis / Qdrant,供负载均衡、K8s 探针、监控告警判断本实例是否健康。
+负责**基础设施联通性检查(liveness/readiness)**:暴露一个公开端点 `GET /api/health`,并行探活 Postgres / Redis / Milvus,供负载均衡、K8s 探针、监控告警判断本实例是否健康。
 
 这是最小的一个模块——只有一个 controller、没有 service,因为它要做的事只是"分别 ping 一下依赖,汇总结果"。
 
@@ -20,10 +20,10 @@ GET /api/health  (无需鉴权)
   → Promise.allSettled([
       prisma.$queryRaw`SELECT 1`,   // Postgres
       redis.client.ping(),          // Redis
-      qdrant.client.getCollections() // Qdrant
+      milvus.client.showCollections() // Milvus
     ])
   → 任一 down → status='degraded'(但仍 HTTP 200)
-  → 返回 { status, details: { postgres, redis, qdrant } }
+  → 返回 { status, details: { postgres, redis, milvus } }
 ```
 
 - **用 `allSettled` 而非 `all`:** 一个组件挂掉不能让检查本身抛错,要让其余组件的结果照常返回。`all` 会在第一个 reject 时短路,拿不到完整 details。
@@ -39,4 +39,4 @@ GET /api/health  (无需鉴权)
 
 4. **`degraded` 不等于 HTTP 失败。** 想让 LB 据此摘流量的话,调用方要解析 body 的 `status` 字段,而不是只看 HTTP 状态码(永远是 200)。若希望 LB 直接按状态码摘流,需要改成 down 时返回 503——这是个有意的取舍,改前想清楚谁在消费这个端点。
 
-5. **依赖来自 `@Global()`,本模块不 imports 它们。** Prisma/Redis/Qdrant 三个 service 是全局可注入的,所以 `health.module.ts` 干净得只有 controllers。若哪天某个 service 不再 `@Global()`,这里要补 imports,否则启动期 DI 解析失败。
+5. **依赖来自 `@Global()`,本模块不 imports 它们。** Prisma/Redis/Milvus 三个 service 是全局可注入的,所以 `health.module.ts` 干净得只有 controllers。若哪天某个 service 不再 `@Global()`,这里要补 imports,否则启动期 DI 解析失败。

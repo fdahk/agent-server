@@ -4,7 +4,7 @@
 > 架构与计划在 `docs/` —— 开工前按需读，本文件不重复。
 
 ## 这是什么
-AI 助手后端（与 our-chat IM 融合）。NestJS + Prisma + Redis + BullMQ(worker) + Qdrant(向量库) + OpenAI；含 pdf/docx/html 解析做 RAG 摄入。
+AI 助手后端（与 our-chat IM 融合）。NestJS + Prisma + Redis + BullMQ(worker) + Milvus(向量库,standalone:etcd+minio+milvus) + OpenAI；含 pdf/docx/html 解析做 RAG 摄入。
 代码在 `apps/node-server/`（见其 CLAUDE.md），分支 `dev`。
 
 ## 文档地图（权威，勿在 CLAUDE.md 重复）

@@ -22,9 +22,9 @@ import { RunEngineService } from '../../src/shared/run-engine/run-engine.service
 import { QueueModule } from '../../src/shared/queue/queue.module';
 import { LlmService } from '../../src/shared/llm/llm.service';
 import {
-  QdrantService,
+  MilvusService,
   type ChunkPoint,
-} from '../../src/shared/qdrant/qdrant.service';
+} from '../../src/shared/milvus/milvus.service';
 import { RunProcessor } from '../../src/modules/runs/run.processor';
 import { IngestionService } from '../../src/modules/documents/ingestion.service';
 import { AgentRunnerService } from '../../src/modules/agent/agent-runner.service';
@@ -42,9 +42,9 @@ const fakeLlm = {
   }),
 };
 
-// 假 Qdrant:记录写入的点,断言双写而不依赖真向量库
+// 假 Milvus:记录写入的点,断言双写而不依赖真向量库
 const upserted: ChunkPoint[] = [];
-const fakeQdrant = {
+const fakeMilvus = {
   upsertChunks: vi.fn((points: ChunkPoint[]) => {
     upserted.push(...points);
     return Promise.resolve();
@@ -53,14 +53,14 @@ const fakeQdrant = {
   searchByUser: vi.fn(() => Promise.resolve([])),
 };
 
-// 复刻 worker 模块图,但把 LLM/Qdrant 换成假实现
+// 复刻 worker 模块图,但把 LLM/Milvus 换成假实现
 @Module({
   imports: [PrismaModule, RedisModule, RunEngineModule, QueueModule],
   providers: [
     RunProcessor,
     IngestionService,
     { provide: LlmService, useValue: fakeLlm },
-    { provide: QdrantService, useValue: fakeQdrant },
+    { provide: MilvusService, useValue: fakeMilvus },
     // 本测试只跑摄取 job,agent 分支用不到,用桩满足 RunProcessor 的依赖
     {
       provide: AgentRunnerService,
@@ -116,7 +116,7 @@ afterAll(async () => {
 });
 
 describe('文档摄取端到端(集成)', () => {
-  it('上传文件 → worker 解析切分 embedding → 双写 Postgres + Qdrant', async () => {
+  it('上传文件 → worker 解析切分 embedding → 双写 Postgres + Milvus', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ingest-'));
     const storagePath = join(dir, 'note.md');
     const content = Array.from(
@@ -167,8 +167,8 @@ describe('文档摄取端到端(集成)', () => {
       orderBy: { chunkIndex: 'asc' },
     });
     expect(chunks.length).toBeGreaterThan(0);
-    // 每个 chunk 都回填了 qdrantPointId,且与写入 Qdrant 的点一一对应
-    for (const c of chunks) expect(c.qdrantPointId).toMatch(/^[0-9a-f-]{36}$/);
+    // 每个 chunk 都回填了 vectorId,且与写入 Milvus 的点一一对应
+    for (const c of chunks) expect(c.vectorId).toMatch(/^[0-9a-f-]{36}$/);
     expect(upserted.length).toBe(chunks.length);
     expect(upserted.every((p) => p.payload.user_id === userId)).toBe(true);
     expect(upserted.every((p) => p.payload.document_id === doc.id)).toBe(true);

@@ -51,7 +51,7 @@ export class DocumentsController {
 
   @Delete(':id')
   @HttpCode(204)
-  @ApiOperation({ summary: '删文档(同步清 Qdrant 向量 + 磁盘文件)' })
+  @ApiOperation({ summary: '删文档(同步清 Milvus 向量 + 磁盘文件)' })
   async delete(
     @CurrentUser() user: AuthedUser,
     @Param('id', ParseIntPipe) id: number,

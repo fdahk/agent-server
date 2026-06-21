@@ -8,37 +8,38 @@ import {
   StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import { RedisContainer, StartedRedisContainer } from '@testcontainers/redis';
-import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
+import { StartedTestContainer } from 'testcontainers';
 import { AppModule } from '../../src/app.module';
+import { startMilvusContainer } from '../helpers/milvus-container';
 
 /**
  * /api/health 端到端测试 —— 启全栈基础设施 + boot AppModule + 请求 /api/health
  *
- * 证明 web 进程能同时与 postgres / redis / qdrant 通信。
+ * 证明 web 进程能同时与 postgres / redis / milvus 通信。
  * 三个 testcontainer 并行启动以节省时间。
  */
 
 let pgContainer: StartedPostgreSqlContainer;
 let redisContainer: StartedRedisContainer;
-let qdrantContainer: StartedTestContainer;
+let milvusContainer: StartedTestContainer;
 let app: INestApplication;
 
 beforeAll(async () => {
   // 并行起 3 个容器
-  [pgContainer, redisContainer, qdrantContainer] = await Promise.all([
+  const [pg, redis, milvus] = await Promise.all([
     new PostgreSqlContainer('postgres:16-alpine').start(),
     new RedisContainer('redis:7-alpine').start(),
-    new GenericContainer('qdrant/qdrant:latest')
-      .withExposedPorts(6333)
-      .withWaitStrategy(Wait.forHttp('/readyz', 6333))
-      .start(),
+    startMilvusContainer(),
   ]);
+  pgContainer = pg;
+  redisContainer = redis;
+  milvusContainer = milvus.container;
 
   process.env.DATABASE_URL = pgContainer.getConnectionUri();
   process.env.REDIS_URL = redisContainer.getConnectionUrl();
-  process.env.QDRANT_URL = `http://${qdrantContainer.getHost()}:${qdrantContainer.getMappedPort(6333)}`;
-  process.env.QDRANT_VECTOR_SIZE = '4';
-  process.env.QDRANT_COLLECTION = 'health_chunks';
+  process.env.MILVUS_ADDRESS = milvus.address;
+  process.env.MILVUS_VECTOR_SIZE = '4';
+  process.env.MILVUS_COLLECTION = 'health_chunks';
 
   // 应用迁移到测试库
   execSync('pnpm prisma migrate deploy', {
@@ -60,7 +61,7 @@ afterAll(async () => {
   await Promise.all([
     pgContainer?.stop(),
     redisContainer?.stop(),
-    qdrantContainer?.stop(),
+    milvusContainer?.stop(),
   ]);
 });
 
@@ -75,7 +76,7 @@ describe('GET /api/health', () => {
       details: {
         postgres: { status: 'up' },
         redis: { status: 'up' },
-        qdrant: { status: 'up' },
+        milvus: { status: 'up' },
       },
     });
   });

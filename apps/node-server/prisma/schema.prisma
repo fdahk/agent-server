@@ -1,4 +1,4 @@
-// 数据模型(关系层在 Postgres,向量在 Qdrant)。
+// 数据模型(关系层在 Postgres,向量在 Milvus)。
 // 主键用 Int(避免 BigInt 在 Node 的 JSON 序列化坑);JSON 列用原生 jsonb。
 
 generator client {
@@ -55,16 +55,17 @@ model Document {
   @@map("documents")
 }
 
-// ============ 文档分片(向量存 Qdrant,这里存元数据)============
+// ============ 文档分片(向量存 Milvus,这里存元数据)============
 model DocumentChunk {
-  id            Int      @id @default(autoincrement())
-  documentId    Int      @map("document_id")
-  userId        Int      @map("user_id") // 冗余,便于按用户过滤/级联
-  chunkIndex    Int      @map("chunk_index")
-  content       String   @db.Text // 原文(拼上下文 + 展示引用)
-  tokenCount    Int      @map("token_count")
-  qdrantPointId String   @map("qdrant_point_id") @db.VarChar(64)
-  createdAt     DateTime @default(now()) @map("created_at")
+  id         Int      @id @default(autoincrement())
+  documentId Int      @map("document_id")
+  userId     Int      @map("user_id") // 冗余,便于按用户过滤/级联
+  chunkIndex Int      @map("chunk_index")
+  content    String   @db.Text // 原文(拼上下文 + 展示引用)
+  tokenCount Int      @map("token_count")
+  // 向量库主键(摄取生成的 UUID),Milvus collection 的 VarChar 主键与此一一对应
+  vectorId   String   @map("vector_id") @db.VarChar(64)
+  createdAt  DateTime @default(now()) @map("created_at")
 
   document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
 

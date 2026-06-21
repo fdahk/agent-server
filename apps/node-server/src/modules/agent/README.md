@@ -48,7 +48,7 @@ worker 进程(RunProcessor 按 job.name 分派到 AgentRunnerService):
 
 1. **dispatch 按 `job.name` 而非 `run.kind`。** demo job 与真实 agent 任务都是 `kind=agent_task`,只能靠入队时的 job 名(`ingestion` / `agent` / `demo`)区分。改 RunProcessor 时别误把 switch 切回 `run.kind`,否则真实 agent 任务会走 demo 桩。
 
-2. **`ToolContext.userId` 是多租户隔离命门,工具内部任何对用户数据的查询必须按它过滤。** `retrieve_knowledge` 经 `RagRetriever`(`user_id` 过滤在 qdrant.searchByUser 写死);`list_documents` / `summarize_document` / `organize` 直接查 Prisma 时必须 `where: { userId: ctx.userId }`。漏一处就跨租户。
+2. **`ToolContext.userId` 是多租户隔离命门,工具内部任何对用户数据的查询必须按它过滤。** `retrieve_knowledge` 经 `RagRetriever`(`user_id` 过滤在 milvus.searchByUser 写死);`list_documents` / `summarize_document` / `organize` 直接查 Prisma 时必须 `where: { userId: ctx.userId }`。漏一处就跨租户。
 
 3. **工具异常喂回模型,不让整个 run 崩。** `execTool` 把任何异常字符串化后返回给模型(`错误:工具执行失败:…`),模型可换路或纠偏。如果改成抛错,一次错误的 LLM 调度会断掉整个 run,体验差。
 

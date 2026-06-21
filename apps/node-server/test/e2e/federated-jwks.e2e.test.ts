@@ -12,9 +12,10 @@ import {
   StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import { RedisContainer, StartedRedisContainer } from '@testcontainers/redis';
-import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
+import { StartedTestContainer } from 'testcontainers';
 import { PrismaClient } from '@prisma/client';
 import { AppModule } from '../../src/app.module';
+import { startMilvusContainer } from '../helpers/milvus-container';
 
 /**
  * JWKS 跨服务鉴权桥 + 联合身份 zero-touch 端到端(模拟 our-chat IdP)。
@@ -42,7 +43,7 @@ const EXTERNAL_SUB = '880088'; // our-chat 侧 userId,与 agent-server 本地号
 
 let pgContainer: StartedPostgreSqlContainer;
 let redisContainer: StartedRedisContainer;
-let qdrantContainer: StartedTestContainer;
+let milvusContainer: StartedTestContainer;
 let jwksServer: HttpServer;
 let app: INestApplication;
 let prisma: PrismaClient;
@@ -90,20 +91,20 @@ beforeAll(async () => {
   });
   const jwksPort = (jwksServer.address() as AddressInfo).port;
 
-  [pgContainer, redisContainer, qdrantContainer] = await Promise.all([
+  const [pg, redis, milvus] = await Promise.all([
     new PostgreSqlContainer('postgres:16-alpine').start(),
     new RedisContainer('redis:7-alpine').start(),
-    new GenericContainer('qdrant/qdrant:latest')
-      .withExposedPorts(6333)
-      .withWaitStrategy(Wait.forHttp('/readyz', 6333))
-      .start(),
+    startMilvusContainer(),
   ]);
+  pgContainer = pg;
+  redisContainer = redis;
+  milvusContainer = milvus.container;
 
   process.env.DATABASE_URL = pgContainer.getConnectionUri();
   process.env.REDIS_URL = redisContainer.getConnectionUrl();
-  process.env.QDRANT_URL = `http://${qdrantContainer.getHost()}:${qdrantContainer.getMappedPort(6333)}`;
-  process.env.QDRANT_VECTOR_SIZE = '4';
-  process.env.QDRANT_COLLECTION = 'jwks_test_chunks';
+  process.env.MILVUS_ADDRESS = milvus.address;
+  process.env.MILVUS_VECTOR_SIZE = '4';
+  process.env.MILVUS_COLLECTION = 'jwks_test_chunks';
   // RS256+JWKS 模式开关:必须在 boot AppModule(JwtStrategy 构造)之前设置。
   process.env.OAUTH_JWKS_URI = `http://127.0.0.1:${jwksPort}/.well-known/jwks.json`;
   process.env.OAUTH_ISSUER = ISSUER;
@@ -131,7 +132,7 @@ afterAll(async () => {
   await Promise.all([
     pgContainer?.stop(),
     redisContainer?.stop(),
-    qdrantContainer?.stop(),
+    milvusContainer?.stop(),
   ]);
 });
 

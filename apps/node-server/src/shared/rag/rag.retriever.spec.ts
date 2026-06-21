@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, type Mock } from 'vitest';
 import { RagRetriever } from './rag.retriever';
 import type { LlmService } from '../llm/llm.service';
-import type { QdrantService } from '../qdrant/qdrant.service';
+import type { MilvusService } from '../milvus/milvus.service';
 import type { PrismaService } from '../prisma/prisma.service';
 
 type Mocks = {
@@ -16,7 +16,7 @@ function makeMocks(): Mocks {
   const searchByUser = vi.fn();
   const findMany = vi.fn();
   const llm = { embed } as unknown as LlmService;
-  const qdrant = { searchByUser } as unknown as QdrantService;
+  const milvus = { searchByUser } as unknown as MilvusService;
   const prisma = {
     documentChunk: { findMany },
   } as unknown as PrismaService;
@@ -24,7 +24,7 @@ function makeMocks(): Mocks {
     embed,
     searchByUser,
     findMany,
-    retriever: new RagRetriever(llm, qdrant, prisma),
+    retriever: new RagRetriever(llm, milvus, prisma),
   };
 }
 
@@ -62,7 +62,7 @@ describe('RagRetriever', () => {
     expect(m.findMany).not.toHaveBeenCalled();
   });
 
-  it('保持 Qdrant 命中顺序(相似度降序),与 Postgres 返回顺序无关', async () => {
+  it('保持 Milvus 命中顺序(相似度降序),与 Postgres 返回顺序无关', async () => {
     const m = makeMocks();
     m.embed.mockResolvedValueOnce([[0.1]]);
     m.searchByUser.mockResolvedValueOnce([hit(5, 0.9), hit(3, 0.7)]);
