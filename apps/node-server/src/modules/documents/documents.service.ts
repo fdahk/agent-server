@@ -48,7 +48,12 @@ export class DocumentsService {
     file: UploadedDoc | undefined,
   ): Promise<{ documentId: number; runId: string }> {
     if (!file) throw new BadRequestException('缺少上传文件 file');
-    if (!isSupported(file.originalname)) {
+
+    // multer/busboy 按 latin1 解析 multipart 文件名;浏览器以 UTF-8 字节发送中文名,
+    // 不重解码会乱码入库(如「简历」→「ç®€å†」)。ASCII 名重解码是 no-op,安全。
+    const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
+
+    if (!isSupported(originalName)) {
       throw new BadRequestException(`不支持的文件类型(${SUPPORTED_HINT})`);
     }
     if (file.size > MAX_UPLOAD_BYTES) {
@@ -59,7 +64,7 @@ export class DocumentsService {
     await mkdir(dir, { recursive: true });
     const storagePath = join(
       dir,
-      `${randomUUID()}-${basename(file.originalname)}`,
+      `${randomUUID()}-${basename(originalName)}`,
     );
     await writeFile(storagePath, file.buffer);
 
@@ -67,7 +72,7 @@ export class DocumentsService {
     const doc = await this.prisma.document.create({
       data: {
         userId: user.userId,
-        filename: file.originalname,
+        filename: originalName,
         mimeType: file.mimetype,
         sizeBytes: file.size,
         storagePath,
@@ -78,7 +83,7 @@ export class DocumentsService {
     const run = await this.runEngine.createRun({
       userId: user.userId,
       kind: 'ingestion',
-      task: `ingest:${file.originalname}`.slice(0, 255),
+      task: `ingest:${originalName}`.slice(0, 255),
       refId: String(doc.id),
     });
     await this.runsQueue.add('ingestion', {
