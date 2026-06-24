@@ -12,7 +12,7 @@ DEV_COMPOSE := docker/docker-compose.dev.yml
 APP_DIR     := apps/node-server
 APP_ENV     := apps/node-server/.env
 
-.PHONY: dev middleware down env deps migrate
+.PHONY: dev middleware down env deps migrate proto proto-sync
 
 # 一键起全部:env/依赖就绪 → 起中间件 → 等 PG → 迁移 → 并发跑 server + worker(Ctrl-C 一起退出)
 dev: env deps middleware
@@ -44,3 +44,12 @@ deps:
 # 应用迁移(改 schema 后)
 migrate:
 	cd $(APP_DIR) && pnpm db:migrate
+
+# 从 proto/ 生成 TS 契约类型(ts-proto)。契约单一源在 our-chat/proto,本仓库 proto/ourchat/agent 为 vendored 副本
+proto:
+	buf generate
+
+# 从 our-chat(canonical)同步 agent 域契约副本后重新生成。需 our-chat 与本仓库同级
+proto-sync:
+	rsync -a --delete ../our-chat/proto/ourchat/agent/ proto/ourchat/agent/
+	buf generate
