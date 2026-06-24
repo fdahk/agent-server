@@ -6,6 +6,7 @@ import {
   type RetrievedChunk,
 } from '../../shared/rag/rag.retriever';
 import { ConversationsService } from './conversations.service';
+import type { Citation } from '../../contracts/gen/ourchat/agent/v1/agent';
 
 /** 拼进 prompt 的最近历史条数(控制总 token,长对话需另做摘要压缩) */
 const HISTORY_LIMIT = 10;
@@ -21,11 +22,7 @@ export type ChatStreamEvent =
   | { type: 'token'; value: string }
   | { type: 'done'; messageId: number; citations: Citation[] };
 
-export interface Citation {
-  chunkId: number;
-  documentId: number;
-  score: number;
-}
+export type { Citation };
 
 /**
  * RAG 对话编排:存提问 → 检索(强制 user 过滤)→ 拼 prompt(system+资料+历史+提问)
