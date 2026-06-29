@@ -44,8 +44,10 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ github.sha }}
             ${{ env.IMAGE }}:latest
-          cache-from: type=gha,scope=agent-node
-          cache-to: type=gha,mode=max,scope=agent-node
+          # 构建缓存存 registry(GHA 缓存 7 天过期,稀疏部署会失效 → 依赖层重建 → 服务器重下几百 MB)。
+          # 存镜像仓库长期有效:依赖未变则复用,依赖层 digest 稳定,服务器拉取直接跳过、只下代码层。
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
 
   # ── 2) 同步 compose + 生成 .env + 拉取镜像滚动重启 ──
   deploy:
@@ -154,11 +156,18 @@ jobs:
             } > .env
             chmod 600 .env
 
-            # 应用镜像在 Docker Hub(public)，服务器经 daemon registry-mirrors 拉取(免登录)。
-            # up --pull missing：只拉本地缺失的镜像(新 sha 的应用镜像)，已缓存的基础镜像不再去碰镜像源，
-            # 避免对 milvus 等大镜像做无谓的 manifest 复检导致卡死/超时(node-server 启动自动跑 prisma migrate)。
+            # 应用镜像走 registry(public)，服务器经 daemon registry-mirrors 拉取(免登录)。
             export AGENT_IMAGE="${IMAGE}:${GIT_SHA}"
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans --pull missing
+            # —— 弱网容错:应用镜像带重试拉取(失败续传已下层),弱网卡顿不会一击毙命 ——
+            # 只拉应用镜像(node-server 与 worker 同镜像);基础镜像(milvus/etcd 等)已缓存,交给 up 命中本地。
+            n=0
+            until docker compose -f docker-compose.prod.yml pull node-server; do
+              n=$((n+1))
+              [ "$n" -ge 8 ] && { echo "::error::应用镜像拉取重试 8 次仍失败,放弃本次部署"; exit 1; }
+              echo "第 $n 次拉取中断,15s 后重试(docker 续传已下层)…"; sleep 15
+            done
+            # 镜像就位 → 起容器(基础镜像命中本地缓存);node-server 启动自动 prisma migrate deploy。
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
             docker image prune -f
 
             echo "✅ agent-server 部署完成：${GIT_SHA}"
