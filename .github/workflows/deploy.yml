@@ -1,9 +1,12 @@
 name: deploy
 
-# 提交即自动部署：推送到 master → 构建 node-server 镜像推腾讯 TCR → SSH 到服务器生成 .env → 登录TCR拉取 → up。
-# 用腾讯 TCR(基础版,广州,与 our-chat 同实例)：服务器同云拉取又快又稳。GHCR blob 国内被墙、Docker Hub 公益源易抖动,故弃用。
+# 提交即自动部署（镜像在服务器本地构建，不跨墙）：
+#   推送到 master → SSH 到服务器 → git fetch+reset 到本次提交 → 生成 .env → docker compose build → up。
+# 为什么不在 CI build 再推镜像：CI runner 在海外、服务器在国内，大镜像跨墙拉/推都不稳（GHCR blob 被墙、
+#   Docker Hub 公益源大层易抖、TCR runner→国内上传大层会断）。改服务器本地 build：源码仅 ~MB 跨墙(git)，
+#   依赖走国内源(npmmirror,compose build-arg 注入)，基础镜像走 daemon 镜像加速，全程不跨墙传大层。
 # 与 our-chat 同机、同模式：① 通用非机密在 compose 默认值；② 机密 + 因环境而异统一放 GitHub Secrets。
-# ② 由本工作流在部署时注入、在服务器生成 .env，服务器零手工维护。
+#   ② 由本工作流在部署时注入、在服务器生成 .env，服务器零手工维护。
 # 想用 dev 触发，把 branches 改成 [dev]；workflow_dispatch 支持手动触发。
 on:
   push:
@@ -12,57 +15,16 @@ on:
 
 permissions:
   contents: read
-  packages: write
-
-env:
-  # node-server 单镜像（server 与 worker 共用，仅入口不同）。腾讯 TCR 基础版,命名空间 skillhub(与 our-chat 同实例)。
-  IMAGE: our-chat.tencentcloudcr.com/skillhub/agent-server-node
 
 jobs:
-  # ── 1) 构建并推送 node-server 镜像 ──
-  build:
-    name: 构建并推送镜像
-    runs-on: ubuntu-latest
-    # 读 environment(pro) 里的 TCR_USERNAME/TCR_PASSWORD
-    environment: pro
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 登录 TCR
-        uses: docker/login-action@v3
-        with:
-          registry: our-chat.tencentcloudcr.com
-          username: ${{ secrets.TCR_USERNAME }}
-          password: ${{ secrets.TCR_PASSWORD }}
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: 构建并推送 node-server
-        uses: docker/build-push-action@v6
-        with:
-          context: apps/node-server
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ github.sha }}
-            ${{ env.IMAGE }}:latest
-          # 构建缓存用 GHA(runner 内部,快)。runner 在海外、TCR 在国内,把缓存(mode=max 含全部中间层)
-          # 推 TCR 是海外→国内大上传,极慢且连接易断(实测 1h+ 失败)。GHA 偶尔过期→依赖层重建→服务器重下,
-          # 但 TCR 同云拉取快,可接受。
-          cache-from: type=gha,scope=agent-node
-          cache-to: type=gha,mode=max,scope=agent-node
-
-  # ── 2) 同步 compose + 生成 .env + 拉取镜像滚动重启 ──
   deploy:
-    name: 部署到服务器
-    needs: build
+    name: 部署到服务器（本地构建）
     runs-on: ubuntu-latest
     environment: pro
     concurrency:
       group: deploy-agent-prod
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
-
       - name: 预检必填 Secrets
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -87,27 +49,13 @@ jobs:
           fi
           echo "✅ 所有必填 Secret 齐全（environment: pro 读取正常）"
 
-      - name: 同步 compose 到服务器
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT || 22 }}
-          source: 'docker/docker-compose.prod.yml'
-          target: ${{ secrets.DEPLOY_PATH || '/opt/agent-server' }}
-          strip_components: 1
-          overwrite: true
-
-      - name: 生成 .env + 拉取镜像 + 滚动重启
+      - name: 拉源码 + 生成 .env + 本地构建 + 滚动重启
         uses: appleboy/ssh-action@v1.2.0
         env:
-          IMAGE: ${{ env.IMAGE }}
+          # 公开仓库，免鉴权 clone；URL 由 GitHub 上下文派生，不硬编码 owner/repo。
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
           GIT_SHA: ${{ github.sha }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/agent-server' }}
-          # TCR 私有仓库,服务器拉取需登录
-          TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
-          TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
           # —— 机密 + 因环境而异，统一走 GitHub Secrets ——
           POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
           POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
@@ -129,14 +77,35 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
-          envs: IMAGE,GIT_SHA,DEPLOY_PATH,TCR_USERNAME,TCR_PASSWORD,POSTGRES_USER,POSTGRES_DB,POSTGRES_PASSWORD,JWT_SECRET,LLM_API_KEY,LLM_BASE_URL,LLM_CHAT_MODEL,LLM_EMBED_MODEL,MILVUS_VECTOR_SIZE,OAUTH_ISSUER,MILVUS_COS_ENDPOINT,MILVUS_COS_ACCESS_KEY,MILVUS_COS_SECRET_KEY,MILVUS_COS_BUCKET,MILVUS_COS_REGION
-          # milvus(~1.5G)等基础镜像拉取慢,默认 10m 会被 "Run Command Timeout" 杀掉,放宽到 30m。
-          command_timeout: 30m
+          envs: REPO_URL,GIT_SHA,DEPLOY_PATH,POSTGRES_USER,POSTGRES_DB,POSTGRES_PASSWORD,JWT_SECRET,LLM_API_KEY,LLM_BASE_URL,LLM_CHAT_MODEL,LLM_EMBED_MODEL,MILVUS_VECTOR_SIZE,OAUTH_ISSUER,MILVUS_COS_ENDPOINT,MILVUS_COS_ACCESS_KEY,MILVUS_COS_SECRET_KEY,MILVUS_COS_BUCKET,MILVUS_COS_REGION
+          # 冷启动首次本地 build(node-server) + 拉 milvus(~1.5G)等基础镜像偏慢,放宽到 40m;之后命中层缓存很快。
+          command_timeout: 40m
           script_stop: true
           script: |
             set -euo pipefail
             umask 077
+            mkdir -p "${DEPLOY_PATH}"
             cd "${DEPLOY_PATH}"
+
+            # —— 取源码：首次 clone,之后 fetch+reset 到本次提交;弱网带重试(git 自带续传) ——
+            if [ ! -d repo/.git ]; then
+              n=0
+              until git clone "${REPO_URL}" repo; do
+                n=$((n+1)); [ "$n" -ge 5 ] && { echo "::error::git clone 重试 5 次仍失败"; exit 1; }
+                echo "git clone 第 $n 次失败,10s 后重试…"; sleep 10
+              done
+            fi
+            cd repo
+            n=0
+            until git fetch --prune origin; do
+              n=$((n+1)); [ "$n" -ge 5 ] && { echo "::error::git fetch 重试 5 次仍失败"; exit 1; }
+              echo "git fetch 第 $n 次失败,10s 后重试…"; sleep 10
+            done
+            # 精确切到触发本次部署的提交(reset --hard 只动追踪文件,不删 .env 等未追踪文件)。
+            git reset --hard "${GIT_SHA}"
+
+            # compose 在 repo/docker/ 运行;.env 落在这里(env_file 注入 + compose ${} 替换)。
+            cd docker
 
             # 共享网络（与 our-chat 互通）：不存在则建（幂等）
             docker network inspect oc-shared >/dev/null 2>&1 || docker network create oc-shared
@@ -161,21 +130,13 @@ jobs:
             } > .env
             chmod 600 .env
 
-            # 应用镜像在腾讯 TCR(私有仓库),先登录(基础版企业实例,仓库默认私有)。
-            echo "${TCR_PASSWORD}" | docker login our-chat.tencentcloudcr.com -u "${TCR_USERNAME}" --password-stdin
-            export AGENT_IMAGE="${IMAGE}:${GIT_SHA}"
-            # —— 弱网容错:应用镜像带重试拉取(失败续传已下层),弱网卡顿不会一击毙命 ——
-            # 只拉应用镜像(node-server 与 worker 同镜像);基础镜像(milvus/etcd 等)已缓存,交给 up 命中本地。
-            n=0
-            until docker compose -f docker-compose.prod.yml pull node-server; do
-              n=$((n+1))
-              [ "$n" -ge 8 ] && { echo "::error::应用镜像拉取重试 8 次仍失败,放弃本次部署"; exit 1; }
-              echo "第 $n 次拉取中断,15s 后重试(docker 续传已下层)…"; sleep 15
-            done
-            # 镜像就位 → 起容器(基础镜像命中本地缓存);node-server 启动自动 prisma migrate deploy。
+            # —— 本地构建应用镜像 ——
+            # 依赖源走国内(NPM_REGISTRY 已在 compose build-args 内置);基础镜像(node/milvus/etcd)走 daemon 镜像加速。
+            docker compose -f docker-compose.prod.yml build
+            # 起容器(基础镜像/已构建镜像均在本地);node-server 启动自动 prisma migrate deploy。
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            # 清理重建后产生的悬空镜像层,省磁盘。
             docker image prune -f
-            docker logout our-chat.tencentcloudcr.com || true
 
             echo "✅ agent-server 部署完成：${GIT_SHA}"
             docker compose -f docker-compose.prod.yml ps

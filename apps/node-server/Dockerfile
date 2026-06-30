@@ -3,6 +3,9 @@ FROM node:22-alpine AS builder
 
 WORKDIR /build
 
+# 依赖源:默认官方;服务器本地 build 时由 compose 传 NPM_REGISTRY=npmmirror(国内快)。
+ARG NPM_REGISTRY=https://registry.npmjs.org
+
 COPY package.json package-lock.json* pnpm-lock.yaml* ./
 
 # prisma 的 postinstall 钩子(prisma generate)在 install 阶段就会跑,需要 schema 先就位。
@@ -10,7 +13,7 @@ COPY package.json package-lock.json* pnpm-lock.yaml* ./
 COPY prisma ./prisma
 
 # 安装全部依赖（含 devDependencies，编译需要 TypeScript、NestJS CLI 等）
-RUN corepack enable pnpm && pnpm install --frozen-lockfile
+RUN corepack enable pnpm && pnpm install --frozen-lockfile --registry="$NPM_REGISTRY"
 
 COPY . .
 RUN pnpm run build

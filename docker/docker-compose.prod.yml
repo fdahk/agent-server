@@ -1,4 +1,4 @@
-# agent-server 生产部署编排（只拉取镜像，不在服务器构建）。
+# agent-server 生产部署编排（应用镜像在服务器本地构建，不跨墙拉/推；基础镜像走 daemon 镜像加速拉取）。
 #
 # 与 our-chat 同机部署，经外部网络 oc-shared 互通（our-chat nginx 同源反代 /agent/ → 本服务；
 # 本服务经 oc-shared 访问 our-chat 的 JWKS 验签）。详见 docs/技术方案/agent-server对外入口方案对比…md。
@@ -10,8 +10,8 @@
 #
 # 部署目录布局（CI 维护，运维零手工）：
 #   /opt/agent-server/
-#     docker-compose.prod.yml   # CI 每次同步
-#     .env                       # CI 每次按 Secrets 重写
+#     repo/                      # CI 每次 git fetch+reset 到本次提交(含本 compose 与 apps/node-server 源码)
+#     repo/docker/.env           # CI 每次按 Secrets 重写(compose 在 repo/docker/ 运行)
 #
 # 前置：服务器需存在外部网络  →  docker network create oc-shared
 name: agent-server
@@ -106,8 +106,12 @@ services:
 
   # ── 应用：node-server(HTTP/SSE) + node-worker(BullMQ)，同一镜像、不同入口 ──
   node-server:
-    # tag 由 CI 注入（github.sha）；默认 latest 仅手动兜底。
-    image: ${AGENT_IMAGE:-our-chat.tencentcloudcr.com/skillhub/agent-server-node:latest}
+    # 服务器本地构建(镜像不跨墙)。compose 在 docker/ 运行,故上下文 = ../apps/node-server(git 拉取的源码)。
+    build:
+      context: ../apps/node-server
+      args:
+        NPM_REGISTRY: https://registry.npmmirror.com
+    image: agent-server-node:local
     container_name: agent-node-server
     restart: unless-stopped
     # ②机密/环境相关由 CI 生成的 .env 注入（LLM_API_KEY、OAUTH_ISSUER 等）
@@ -155,7 +159,8 @@ services:
     networks: [agent-server, oc-shared]
 
   node-worker:
-    image: ${AGENT_IMAGE:-our-chat.tencentcloudcr.com/skillhub/agent-server-node:latest}
+    # 与 node-server 同镜像(本地构建产物),仅入口不同;不重复 build,直接复用 node-server 构出的 tag。
+    image: agent-server-node:local
     container_name: agent-node-worker
     restart: unless-stopped
     command: ['node', 'dist/main.worker']
