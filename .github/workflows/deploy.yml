@@ -1,10 +1,12 @@
 name: deploy
 
 # 提交即自动部署（镜像在服务器本地构建，不跨墙）：
-#   推送到 master → SSH 到服务器 → git fetch+reset 到本次提交 → 生成 .env → docker compose build → up。
-# 为什么不在 CI build 再推镜像：CI runner 在海外、服务器在国内，大镜像跨墙拉/推都不稳（GHCR blob 被墙、
-#   Docker Hub 公益源大层易抖、TCR runner→国内上传大层会断）。改服务器本地 build：源码仅 ~MB 跨墙(git)，
-#   依赖走国内源(npmmirror,compose build-arg 注入)，基础镜像走 daemon 镜像加速，全程不跨墙传大层。
+#   推送到 master → runner checkout 源码 → scp 构建上下文到服务器 → SSH 生成 .env → docker compose build → up。
+# 为什么源码走 runner→服务器 scp，而不在服务器 git clone：国内服务器 git clone github 会被 GFW 重置
+#   (GnuTLS recv error -110)。runner 在 GitHub 内网,checkout 极快;源码仅 ~MB,经已打通的 SSH 通道 scp 很稳。
+# 为什么不在 CI build 再推镜像：大镜像跨墙拉/推都不稳(GHCR blob 被墙、Docker Hub 公益源大层易抖、
+#   TCR runner→国内上传大层会断)。改服务器本地 build:依赖走国内源(npmmirror,compose build-arg 注入)，
+#   基础镜像走 daemon 镜像加速，全程不跨墙传大层。
 # 与 our-chat 同机、同模式：① 通用非机密在 compose 默认值；② 机密 + 因环境而异统一放 GitHub Secrets。
 #   ② 由本工作流在部署时注入、在服务器生成 .env，服务器零手工维护。
 # 想用 dev 触发，把 branches 改成 [dev]；workflow_dispatch 支持手动触发。
@@ -25,6 +27,9 @@ jobs:
       group: deploy-agent-prod
       cancel-in-progress: false
     steps:
+      # runner 在 GitHub 内网，checkout 本次提交的源码（作为待 scp 的构建上下文）
+      - uses: actions/checkout@v4
+
       - name: 预检必填 Secrets
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -49,11 +54,22 @@ jobs:
           fi
           echo "✅ 所有必填 Secret 齐全（environment: pro 读取正常）"
 
-      - name: 拉源码 + 生成 .env + 本地构建 + 滚动重启
+      # 把构建上下文(apps/node-server 源码 + docker/) scp 到服务器。仅 git 跟踪文本源码,~MB,经 SSH 很稳。
+      # overwrite 覆盖旧源码;不删服务器侧专属文件(.env 不在源码里,scp 不动它)。
+      - name: 同步构建上下文到服务器
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: 'apps/node-server,docker'
+          target: ${{ secrets.DEPLOY_PATH || '/opt/agent-server' }}
+          overwrite: true
+
+      - name: 生成 .env + 本地构建 + 滚动重启
         uses: appleboy/ssh-action@v1.2.0
         env:
-          # 公开仓库，免鉴权 clone；URL 由 GitHub 上下文派生，不硬编码 owner/repo。
-          REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
           GIT_SHA: ${{ github.sha }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/agent-server' }}
           # —— 机密 + 因环境而异，统一走 GitHub Secrets ——
@@ -77,35 +93,15 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
-          envs: REPO_URL,GIT_SHA,DEPLOY_PATH,POSTGRES_USER,POSTGRES_DB,POSTGRES_PASSWORD,JWT_SECRET,LLM_API_KEY,LLM_BASE_URL,LLM_CHAT_MODEL,LLM_EMBED_MODEL,MILVUS_VECTOR_SIZE,OAUTH_ISSUER,MILVUS_COS_ENDPOINT,MILVUS_COS_ACCESS_KEY,MILVUS_COS_SECRET_KEY,MILVUS_COS_BUCKET,MILVUS_COS_REGION
+          envs: GIT_SHA,DEPLOY_PATH,POSTGRES_USER,POSTGRES_DB,POSTGRES_PASSWORD,JWT_SECRET,LLM_API_KEY,LLM_BASE_URL,LLM_CHAT_MODEL,LLM_EMBED_MODEL,MILVUS_VECTOR_SIZE,OAUTH_ISSUER,MILVUS_COS_ENDPOINT,MILVUS_COS_ACCESS_KEY,MILVUS_COS_SECRET_KEY,MILVUS_COS_BUCKET,MILVUS_COS_REGION
           # 冷启动首次本地 build(node-server) + 拉 milvus(~1.5G)等基础镜像偏慢,放宽到 40m;之后命中层缓存很快。
           command_timeout: 40m
           script_stop: true
           script: |
             set -euo pipefail
             umask 077
-            mkdir -p "${DEPLOY_PATH}"
-            cd "${DEPLOY_PATH}"
-
-            # —— 取源码：首次 clone,之后 fetch+reset 到本次提交;弱网带重试(git 自带续传) ——
-            if [ ! -d repo/.git ]; then
-              n=0
-              until git clone "${REPO_URL}" repo; do
-                n=$((n+1)); [ "$n" -ge 5 ] && { echo "::error::git clone 重试 5 次仍失败"; exit 1; }
-                echo "git clone 第 $n 次失败,10s 后重试…"; sleep 10
-              done
-            fi
-            cd repo
-            n=0
-            until git fetch --prune origin; do
-              n=$((n+1)); [ "$n" -ge 5 ] && { echo "::error::git fetch 重试 5 次仍失败"; exit 1; }
-              echo "git fetch 第 $n 次失败,10s 后重试…"; sleep 10
-            done
-            # 精确切到触发本次部署的提交(reset --hard 只动追踪文件,不删 .env 等未追踪文件)。
-            git reset --hard "${GIT_SHA}"
-
-            # compose 在 repo/docker/ 运行;.env 落在这里(env_file 注入 + compose ${} 替换)。
-            cd docker
+            # compose 在 docker/ 运行;构建上下文(../apps/node-server)与 .env 均在部署目录下。
+            cd "${DEPLOY_PATH}/docker"
 
             # 共享网络（与 our-chat 互通）：不存在则建（幂等）
             docker network inspect oc-shared >/dev/null 2>&1 || docker network create oc-shared

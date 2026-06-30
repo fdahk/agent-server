@@ -10,8 +10,9 @@
 #
 # 部署目录布局（CI 维护，运维零手工）：
 #   /opt/agent-server/
-#     repo/                      # CI 每次 git fetch+reset 到本次提交(含本 compose 与 apps/node-server 源码)
-#     repo/docker/.env           # CI 每次按 Secrets 重写(compose 在 repo/docker/ 运行)
+#     apps/node-server/          # CI 每次 scp 同步(node-server 构建上下文)
+#     docker/                    # CI 每次 scp 同步(本 compose)
+#     docker/.env                # CI 每次按 Secrets 重写(compose 在 docker/ 运行)
 #
 # 前置：服务器需存在外部网络  →  docker network create oc-shared
 name: agent-server
@@ -106,7 +107,7 @@ services:
 
   # ── 应用：node-server(HTTP/SSE) + node-worker(BullMQ)，同一镜像、不同入口 ──
   node-server:
-    # 服务器本地构建(镜像不跨墙)。compose 在 docker/ 运行,故上下文 = ../apps/node-server(git 拉取的源码)。
+    # 服务器本地构建(镜像不跨墙)。compose 在 docker/ 运行,上下文 = ../apps/node-server(CI scp 同步的源码)。
     build:
       context: ../apps/node-server
       args:
