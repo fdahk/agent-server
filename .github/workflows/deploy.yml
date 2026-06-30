@@ -94,45 +94,13 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
           envs: GIT_SHA,DEPLOY_PATH,POSTGRES_USER,POSTGRES_DB,POSTGRES_PASSWORD,JWT_SECRET,LLM_API_KEY,LLM_BASE_URL,LLM_CHAT_MODEL,LLM_EMBED_MODEL,MILVUS_VECTOR_SIZE,OAUTH_ISSUER,MILVUS_COS_ENDPOINT,MILVUS_COS_ACCESS_KEY,MILVUS_COS_SECRET_KEY,MILVUS_COS_BUCKET,MILVUS_COS_REGION
-          # 冷启动首次本地 build(node-server) + 拉 milvus(~1.5G)等基础镜像偏慢,放宽到 40m;之后命中层缓存很快。
-          command_timeout: 40m
+          # ssh-action 内是轮询(每 10s tail 一次,顺便给 SSH 通道喂流量防弱网空闲被重置),
+          # 实际 build+up 由 ci-deploy.sh 用 setsid 脱离本会话后台跑(断连也跑完)。放宽到 35m 覆盖轮询上限。
+          command_timeout: 35m
           script_stop: true
+          # 全部服务器侧逻辑收敛进已 scp 的 docker/ci-deploy.sh(生成 .env → 后台 build+up → 轮询结果),
+          # 这样 drone-ssh 的逐行包裹只作用于这一条调用,不会破坏脚本里的 heredoc/循环等复合结构。
           script: |
             set -euo pipefail
-            umask 077
-            # compose 在 docker/ 运行;构建上下文(../apps/node-server)与 .env 均在部署目录下。
             cd "${DEPLOY_PATH}/docker"
-
-            # 共享网络（与 our-chat 互通）：不存在则建（幂等）
-            docker network inspect oc-shared >/dev/null 2>&1 || docker network create oc-shared
-
-            # —— 生成 .env（仅机密/环境相关；通用默认在 compose）。空值的可选项不写入，留 compose 默认 ——
-            {
-              echo "POSTGRES_USER=${POSTGRES_USER:-agent}"
-              echo "POSTGRES_DB=${POSTGRES_DB:-agent_server}"
-              echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
-              echo "JWT_SECRET=${JWT_SECRET}"
-              echo "LLM_API_KEY=${LLM_API_KEY}"
-              echo "OAUTH_ISSUER=${OAUTH_ISSUER}"
-              echo "MILVUS_COS_ENDPOINT=${MILVUS_COS_ENDPOINT}"
-              echo "MILVUS_COS_ACCESS_KEY=${MILVUS_COS_ACCESS_KEY}"
-              echo "MILVUS_COS_SECRET_KEY=${MILVUS_COS_SECRET_KEY}"
-              echo "MILVUS_COS_BUCKET=${MILVUS_COS_BUCKET}"
-              [ -n "${MILVUS_COS_REGION:-}" ]  && echo "MILVUS_COS_REGION=${MILVUS_COS_REGION}"
-              [ -n "${MILVUS_VECTOR_SIZE:-}" ] && echo "MILVUS_VECTOR_SIZE=${MILVUS_VECTOR_SIZE}"
-              [ -n "${LLM_BASE_URL:-}" ]       && echo "LLM_BASE_URL=${LLM_BASE_URL}"
-              [ -n "${LLM_CHAT_MODEL:-}" ]     && echo "LLM_CHAT_MODEL=${LLM_CHAT_MODEL}"
-              [ -n "${LLM_EMBED_MODEL:-}" ]    && echo "LLM_EMBED_MODEL=${LLM_EMBED_MODEL}"
-            } > .env
-            chmod 600 .env
-
-            # —— 本地构建应用镜像 ——
-            # 依赖源走国内(NPM_REGISTRY 已在 compose build-args 内置);基础镜像(node/milvus/etcd)走 daemon 镜像加速。
-            docker compose -f docker-compose.prod.yml build
-            # 起容器(基础镜像/已构建镜像均在本地);node-server 启动自动 prisma migrate deploy。
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
-            # 清理重建后产生的悬空镜像层,省磁盘。
-            docker image prune -f
-
-            echo "✅ agent-server 部署完成：${GIT_SHA}"
-            docker compose -f docker-compose.prod.yml ps
+            bash ci-deploy.sh
