@@ -107,7 +107,7 @@ services:
   # ── 应用：node-server(HTTP/SSE) + node-worker(BullMQ)，同一镜像、不同入口 ──
   node-server:
     # tag 由 CI 注入（github.sha）；默认 latest 仅手动兜底。
-    image: ${AGENT_IMAGE:-docker.io/fdahk/agent-server-node:latest}
+    image: ${AGENT_IMAGE:-our-chat.tencentcloudcr.com/skillhub/agent-server-node:latest}
     container_name: agent-node-server
     restart: unless-stopped
     # ②机密/环境相关由 CI 生成的 .env 注入（LLM_API_KEY、OAUTH_ISSUER 等）
@@ -155,7 +155,7 @@ services:
     networks: [agent-server, oc-shared]
 
   node-worker:
-    image: ${AGENT_IMAGE:-docker.io/fdahk/agent-server-node:latest}
+    image: ${AGENT_IMAGE:-our-chat.tencentcloudcr.com/skillhub/agent-server-node:latest}
     container_name: agent-node-worker
     restart: unless-stopped
     command: ['node', 'dist/main.worker']
