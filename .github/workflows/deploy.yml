@@ -45,10 +45,11 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ github.sha }}
             ${{ env.IMAGE }}:latest
-          # 构建缓存存 registry(GHA 缓存 7 天过期,稀疏部署会失效 → 依赖层重建 → 服务器重下几百 MB)。
-          # 存镜像仓库长期有效:依赖未变则复用,依赖层 digest 稳定,服务器拉取直接跳过、只下代码层。
-          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+          # 构建缓存用 GHA(runner 内部,快)。runner 在海外、TCR 在国内,把缓存(mode=max 含全部中间层)
+          # 推 TCR 是海外→国内大上传,极慢且连接易断(实测 1h+ 失败)。GHA 偶尔过期→依赖层重建→服务器重下,
+          # 但 TCR 同云拉取快,可接受。
+          cache-from: type=gha,scope=agent-node
+          cache-to: type=gha,mode=max,scope=agent-node
 
   # ── 2) 同步 compose + 生成 .env + 拉取镜像滚动重启 ──
   deploy:
